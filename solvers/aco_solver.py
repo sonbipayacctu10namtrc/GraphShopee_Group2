@@ -27,7 +27,6 @@ class ACOSolver(Solver):
         self._distance_cache: Dict[Tuple[Position, Position], int] = {}
         self._next_move_cache: Dict[Tuple[Position, Position], Move] = {}
         self._pheromone: Dict[Tuple[str, int], float] = {}
-        self._pickup_commitments: Dict[int, int] = {}
         self._alpha = 1.2
         self._beta = 2.0
         self._rho = 0.08
@@ -272,33 +271,10 @@ class ACOSolver(Solver):
         orders: Dict[int, Order],
         t: int,
     ) -> Dict[int, Order]:
-        assignments: Dict[int, Order] = {}
-        used_shippers: set[int] = set()
-        used_orders: set[int] = set()
-
-        for shipper in shippers:
-            committed_order_id = self._pickup_commitments.get(shipper.id)
-            if committed_order_id is None:
-                continue
-            order = orders.get(committed_order_id)
-            if order is None or not shipper.can_carry(order, orders):
-                self._pickup_commitments.pop(shipper.id, None)
-                continue
-            if self._pickup_heuristic(shipper, order, t) <= 0.0:
-                self._pickup_commitments.pop(shipper.id, None)
-                continue
-            assignments[shipper.id] = order
-            used_shippers.add(shipper.id)
-            used_orders.add(order.id)
-
         candidates: List[Tuple[Tuple[int, int, int, int, int, float, int], float, int, Order]] = []
 
         for shipper in shippers:
-            if shipper.id in used_shippers:
-                continue
             for order in orders.values():
-                if order.id in used_orders:
-                    continue
                 if not shipper.can_carry(order, orders):
                     continue
                 if self._pickup_heuristic(shipper, order, t) <= 0.0:
@@ -314,25 +290,18 @@ class ACOSolver(Solver):
 
         candidates.sort(key=lambda item: (item[0], item[1], item[2], item[3].id))
 
+        assignments: Dict[int, Order] = {}
+        used_shippers: set[int] = set()
+        used_orders: set[int] = set()
+
         for _, _, shipper_id, order in candidates:
             if shipper_id in used_shippers or order.id in used_orders:
                 continue
             used_shippers.add(shipper_id)
             used_orders.add(order.id)
             assignments[shipper_id] = order
-            self._pickup_commitments[shipper_id] = order.id
 
         return assignments
-
-    def _sync_pickup_commitments(self, shippers: List[Shipper], orders: Dict[int, Order]) -> None:
-        active_shipper_ids = {shipper.id for shipper in shippers}
-        for shipper_id, order_id in list(self._pickup_commitments.items()):
-            if shipper_id not in active_shipper_ids:
-                self._pickup_commitments.pop(shipper_id, None)
-                continue
-            order = orders.get(order_id)
-            if order is None or order.picked or order.delivered:
-                self._pickup_commitments.pop(shipper_id, None)
 
     def _should_pickup_before_delivery(
         self,
@@ -390,16 +359,11 @@ class ACOSolver(Solver):
         shippers: List[Shipper] = obs["shippers"]
         t = int(obs.get("t", 0))
 
-        self._sync_pickup_commitments(shippers, orders)
-
         delivery_orders = {
             shipper.id: self._select_delivery(shipper, orders, t)
             for shipper in shippers
         }
         idle_shippers = [shipper for shipper in shippers if delivery_orders[shipper.id] is None]
-        for shipper in shippers:
-            if delivery_orders[shipper.id] is not None:
-                self._pickup_commitments.pop(shipper.id, None)
 
         actions: Dict[int, Action] = {}
         reserved_pickups: set[int] = set()
@@ -430,7 +394,6 @@ class ACOSolver(Solver):
                         pickup_order,
                         self._reinforcement_amount(self._deposit * 0.3, pickup_reward),
                     )
-                    self._pickup_commitments[shipper.id] = pickup_order.id
                     actions[shipper.id] = self._pickup_action(shipper, pickup_order)
                     continue
 
@@ -457,11 +420,9 @@ class ACOSolver(Solver):
                     pickup_order,
                     self._reinforcement_amount(self._deposit * 0.4, pickup_reward),
                 )
-                self._pickup_commitments[shipper.id] = pickup_order.id
                 actions[shipper.id] = self._pickup_action(shipper, pickup_order)
                 continue
 
-            self._pickup_commitments.pop(shipper.id, None)
             actions[shipper.id] = ("S", 0)
 
         return actions
