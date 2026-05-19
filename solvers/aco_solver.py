@@ -330,8 +330,16 @@ class ACOSolver(Solver):
 
         pickup_rank = self._pickup_rank(shipper, pickup_order, t)
         delivery_rank = self._delivery_rank(shipper, delivery_order, t)
+        detour_extra = detour_finish - direct_finish
+        pickup_finish = (
+            t
+            + self._distance(shipper.position, pickup_pos)
+            + self._distance(pickup_pos, (pickup_order.ex, pickup_order.ey))
+        )
+        pickup_reward = self._estimated_reward(pickup_order, pickup_finish)
+        extra_allowance = 1 if pickup_order.p >= 2 and pickup_reward >= 20.0 else 0
         return (
-            detour_finish - direct_finish <= 3
+            detour_extra <= 3 + extra_allowance
             and pickup_rank[0] == 0
             and (
                 pickup_order.p > delivery_order.p
