@@ -5,7 +5,7 @@ import time
 from collections import deque
 from typing import Dict, Iterable, List, Optional, Tuple
 
-from env import DeliveryEnv, Order, Shipper, is_valid_cell, valid_next_pos
+from env import DeliveryEnv, Order, Shipper, delivery_reward, is_valid_cell, valid_next_pos
 from solvers.solver import Solver
 
 
@@ -27,6 +27,7 @@ class ACOSolver(Solver):
         self._distance_cache: Dict[Tuple[Position, Position], int] = {}
         self._next_move_cache: Dict[Tuple[Position, Position], Move] = {}
         self._pheromone: Dict[Tuple[str, int], float] = {}
+        self._pickup_commitments: Dict[int, int] = {}
         self._alpha = 1.2
         self._beta = 2.0
         self._rho = 0.08
@@ -142,6 +143,13 @@ class ACOSolver(Solver):
     def _aco_value(self, pheromone: float, heuristic: float) -> float:
         return (pheromone**self._alpha) * (max(heuristic, 1e-6) ** self._beta)
 
+    def _estimated_reward(self, order: Order, finish_t: int) -> float:
+        return max(0.0, delivery_reward(order, finish_t, int(self.cfg.get("T", 1))))
+
+    def _reinforcement_amount(self, base_amount: float, reward: float) -> float:
+        reward_scale = 1.0 + min(1.0, reward / 25.0)
+        return base_amount * reward_scale
+
     def _delivery_heuristic(self, shipper: Shipper, order: Order, t: int) -> float:
         distance = self._distance(shipper.position, (order.ex, order.ey))
         if distance >= INF:
@@ -152,7 +160,8 @@ class ACOSolver(Solver):
         urgency = 1.0 / (1.0 + max(slack, 0))
         late_penalty = 0.25 if finish_t > order.et else 1.0
         priority = 1.0 + 0.45 * order.p
-        return late_penalty * priority * (1.0 + urgency) / (1.0 + distance)
+        reward_factor = 1.0 + min(2.0, self._estimated_reward(order, finish_t) / 20.0)
+        return late_penalty * priority * reward_factor * (1.0 + urgency) / (1.0 + distance)
 
     def _pickup_heuristic(self, shipper: Shipper, order: Order, t: int) -> float:
         pickup_pos = (order.sx, order.sy)
@@ -167,7 +176,10 @@ class ACOSolver(Solver):
         late_penalty = 0.25 if finish_t > order.et else 1.0
         priority = 1.0 + 0.5 * order.p
         capacity_fit = max(0.2, 1.0 - order.w / max(shipper.W_max, 1.0))
-        return late_penalty * priority * capacity_fit / (1.0 + pickup_distance + 0.35 * delivery_distance)
+        urgency = 1.0 / (1.0 + max(slack, 0))
+        travel = 1.0 + pickup_distance + 0.35 * delivery_distance
+        reward_factor = 1.0 + min(2.5, self._estimated_reward(order, finish_t) / 20.0)
+        return late_penalty * priority * reward_factor * capacity_fit * (1.0 + 0.4 * urgency) / travel
 
     def _delivery_score(self, shipper: Shipper, order: Order, t: int) -> float:
         return self._aco_value(
@@ -181,14 +193,16 @@ class ACOSolver(Solver):
             self._pickup_heuristic(shipper, order, t),
         )
 
-    def _delivery_rank(self, shipper: Shipper, order: Order, t: int) -> Tuple[int, int, int, int, float, int]:
+    def _delivery_rank(self, shipper: Shipper, order: Order, t: int) -> Tuple[int, int, int, float, int, float, int]:
         distance = self._distance(shipper.position, (order.ex, order.ey))
         finish_t = t + distance
         slack = order.et - finish_t
+        estimated_reward = self._estimated_reward(order, finish_t)
         return (
             1 if finish_t > order.et else 0,
             slack,
             distance,
+            -estimated_reward,
             -order.p,
             -self._get_pheromone("deliver", order),
             order.id,
@@ -252,6 +266,74 @@ class ACOSolver(Solver):
             key=lambda order: self._pickup_rank(shipper, order, t),
         )
 
+    def _assign_pickups(
+        self,
+        shippers: List[Shipper],
+        orders: Dict[int, Order],
+        t: int,
+    ) -> Dict[int, Order]:
+        assignments: Dict[int, Order] = {}
+        used_shippers: set[int] = set()
+        used_orders: set[int] = set()
+
+        for shipper in shippers:
+            committed_order_id = self._pickup_commitments.get(shipper.id)
+            if committed_order_id is None:
+                continue
+            order = orders.get(committed_order_id)
+            if order is None or not shipper.can_carry(order, orders):
+                self._pickup_commitments.pop(shipper.id, None)
+                continue
+            if self._pickup_heuristic(shipper, order, t) <= 0.0:
+                self._pickup_commitments.pop(shipper.id, None)
+                continue
+            assignments[shipper.id] = order
+            used_shippers.add(shipper.id)
+            used_orders.add(order.id)
+
+        candidates: List[Tuple[Tuple[int, int, int, int, int, float, int], float, int, Order]] = []
+
+        for shipper in shippers:
+            if shipper.id in used_shippers:
+                continue
+            for order in orders.values():
+                if order.id in used_orders:
+                    continue
+                if not shipper.can_carry(order, orders):
+                    continue
+                if self._pickup_heuristic(shipper, order, t) <= 0.0:
+                    continue
+                candidates.append(
+                    (
+                        self._pickup_rank(shipper, order, t),
+                        -self._pickup_score(shipper, order, t),
+                        shipper.id,
+                        order,
+                    )
+                )
+
+        candidates.sort(key=lambda item: (item[0], item[1], item[2], item[3].id))
+
+        for _, _, shipper_id, order in candidates:
+            if shipper_id in used_shippers or order.id in used_orders:
+                continue
+            used_shippers.add(shipper_id)
+            used_orders.add(order.id)
+            assignments[shipper_id] = order
+            self._pickup_commitments[shipper_id] = order.id
+
+        return assignments
+
+    def _sync_pickup_commitments(self, shippers: List[Shipper], orders: Dict[int, Order]) -> None:
+        active_shipper_ids = {shipper.id for shipper in shippers}
+        for shipper_id, order_id in list(self._pickup_commitments.items()):
+            if shipper_id not in active_shipper_ids:
+                self._pickup_commitments.pop(shipper_id, None)
+                continue
+            order = orders.get(order_id)
+            if order is None or order.picked or order.delivered:
+                self._pickup_commitments.pop(shipper_id, None)
+
     def _should_pickup_before_delivery(
         self,
         shipper: Shipper,
@@ -308,12 +390,28 @@ class ACOSolver(Solver):
         shippers: List[Shipper] = obs["shippers"]
         t = int(obs.get("t", 0))
 
+        self._sync_pickup_commitments(shippers, orders)
+
+        delivery_orders = {
+            shipper.id: self._select_delivery(shipper, orders, t)
+            for shipper in shippers
+        }
+        idle_shippers = [shipper for shipper in shippers if delivery_orders[shipper.id] is None]
+        for shipper in shippers:
+            if delivery_orders[shipper.id] is not None:
+                self._pickup_commitments.pop(shipper.id, None)
+
         actions: Dict[int, Action] = {}
         reserved_pickups: set[int] = set()
+        assigned_pickups = self._assign_pickups(idle_shippers, orders, t)
+        reserved_pickups.update(order.id for order in assigned_pickups.values())
 
         for shipper in sorted(shippers, key=lambda s: s.id):
-            delivery_order = self._select_delivery(shipper, orders, t)
-            pickup_order = self._select_pickup(shipper, orders, reserved_pickups, t)
+            delivery_order = delivery_orders[shipper.id]
+            pickup_order = assigned_pickups.get(shipper.id)
+
+            if delivery_order is not None:
+                pickup_order = self._select_pickup(shipper, orders, reserved_pickups, t)
 
             if delivery_order is not None:
                 if (
@@ -321,20 +419,49 @@ class ACOSolver(Solver):
                     and self._should_pickup_before_delivery(shipper, pickup_order, delivery_order, t)
                 ):
                     reserved_pickups.add(pickup_order.id)
-                    self._reinforce("pickup", pickup_order, self._deposit * 0.35)
+                    pickup_finish = (
+                        t
+                        + self._distance(shipper.position, (pickup_order.sx, pickup_order.sy))
+                        + self._distance((pickup_order.sx, pickup_order.sy), (pickup_order.ex, pickup_order.ey))
+                    )
+                    pickup_reward = self._estimated_reward(pickup_order, pickup_finish)
+                    self._reinforce(
+                        "pickup",
+                        pickup_order,
+                        self._reinforcement_amount(self._deposit * 0.3, pickup_reward),
+                    )
+                    self._pickup_commitments[shipper.id] = pickup_order.id
                     actions[shipper.id] = self._pickup_action(shipper, pickup_order)
                     continue
 
-                self._reinforce("deliver", delivery_order, self._deposit * 0.5)
+                delivery_finish = t + self._distance(shipper.position, (delivery_order.ex, delivery_order.ey))
+                delivery_reward_value = self._estimated_reward(delivery_order, delivery_finish)
+                self._reinforce(
+                    "deliver",
+                    delivery_order,
+                    self._reinforcement_amount(self._deposit * 0.5, delivery_reward_value),
+                )
                 actions[shipper.id] = self._delivery_action(shipper, delivery_order)
                 continue
 
             if pickup_order is not None:
                 reserved_pickups.add(pickup_order.id)
-                self._reinforce("pickup", pickup_order, self._deposit * 0.4)
+                pickup_finish = (
+                    t
+                    + self._distance(shipper.position, (pickup_order.sx, pickup_order.sy))
+                    + self._distance((pickup_order.sx, pickup_order.sy), (pickup_order.ex, pickup_order.ey))
+                )
+                pickup_reward = self._estimated_reward(pickup_order, pickup_finish)
+                self._reinforce(
+                    "pickup",
+                    pickup_order,
+                    self._reinforcement_amount(self._deposit * 0.4, pickup_reward),
+                )
+                self._pickup_commitments[shipper.id] = pickup_order.id
                 actions[shipper.id] = self._pickup_action(shipper, pickup_order)
                 continue
 
+            self._pickup_commitments.pop(shipper.id, None)
             actions[shipper.id] = ("S", 0)
 
         return actions
