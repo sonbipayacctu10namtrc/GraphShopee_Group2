@@ -1,0 +1,31 @@
+{
+  "config_name": "C4",
+  "orders_total_fixed": 60,
+  "online_generation": true,
+  "results": [
+    {
+      "method": "MAPD-CBS",
+      "config_name": "C4",
+      "total_orders": 60,
+      "orders_generated": 60,
+      "delivered": 37,
+      "on_time": 27,
+      "late": 10,
+      "missed": 23,
+      "delivery_rate": 61.666666666666664,
+      "on_time_rate": 72.97297297297297,
+      "total_reward": 612.355,
+      "total_movecost": -9.3975,
+      "net_reward": 602.9575,
+      "elapsed_sec": 0.5957,
+      "shipper_rewards": [
+        208.513,
+        117.759,
+        193.5674,
+        83.1181
+      ],
+      "status": "OK",
+      "wall_sec": 0.6
+    }
+  ]
+}

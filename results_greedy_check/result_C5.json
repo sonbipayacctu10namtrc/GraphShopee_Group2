@@ -1,0 +1,32 @@
+{
+  "config_name": "C5",
+  "orders_total_fixed": 80,
+  "online_generation": true,
+  "results": [
+    {
+      "method": "GreedyBFS",
+      "config_name": "C5",
+      "total_orders": 80,
+      "orders_generated": 80,
+      "delivered": 52,
+      "on_time": 40,
+      "late": 12,
+      "missed": 28,
+      "delivery_rate": 65.0,
+      "on_time_rate": 76.92307692307692,
+      "total_reward": 834.9086,
+      "total_movecost": -12.165,
+      "net_reward": 822.7437,
+      "elapsed_sec": 1.0409,
+      "shipper_rewards": [
+        126.8971,
+        233.6452,
+        230.229,
+        188.6308,
+        43.3416
+      ],
+      "status": "OK",
+      "wall_sec": 1.04
+    }
+  ]
+}
