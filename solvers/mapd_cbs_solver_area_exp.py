@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import heapq
+import math
 import time
 from collections import defaultdict, deque
 from typing import DefaultDict, Dict, Iterable, List, NamedTuple, Optional, Tuple
@@ -44,7 +45,7 @@ class MAPDCBSSolver(Solver):
     - thực thi bước đầu tiên, sau đó lặp lại khi env sinh đơn mới.
     """
 
-    method_name = "MAPD-CBS"
+    method_name = "MAPD-CBS-AREA-EXP"
 
     def __init__(self, env: DeliveryEnv):
         super().__init__(env)
@@ -62,6 +63,12 @@ class MAPDCBSSolver(Solver):
         self._g = int(self.cfg.get("G", 0))
         self._t_limit = int(self.cfg.get("T", 1))
         self._large_mode = self._c >= 12 or self._g >= 500
+        self._total_cells = max(1, self._n * self._n)
+        self._blocked_cells = sum(cell == 1 for row in self.grid for cell in row)
+        self._obstacle_ratio = self._blocked_cells / self._total_cells
+        self._openness = 1.0 - self._obstacle_ratio
+        self._area_anchors: Dict[int, Position] = {}
+        self._large_active_count = 0
         self._planning_window = max(12, min(34, self._n + 8))
         self._max_cbs_nodes = 20
         self._hotspot_tracker = HotspotTracker(window=80, radius=3, max_hotspots=3)
@@ -338,17 +345,58 @@ class MAPDCBSSolver(Solver):
             order.id,
         )
 
+    def _ensure_area_anchors(self, shippers: List[Shipper]) -> None:
+        for shipper in shippers:
+            self._area_anchors.setdefault(shipper.id, shipper.position)
+
+    def _activity_radius(self) -> float:
+        base_radius = self._n / math.sqrt(max(1, self._c))
+        pressure = self._large_active_count / max(1, self._c)
+        if pressure < 2.0:
+            pressure_factor = 0.85
+        elif pressure < 5.0:
+            pressure_factor = 1.0
+        else:
+            pressure_factor = 1.15
+
+        openness_factor = 0.75 + 0.75 * self._openness
+        radius = base_radius * openness_factor * pressure_factor
+        return max(4.0, min(0.65 * self._n, radius))
+
+    def _activity_area_penalty(self, shipper: Shipper, pickup: Position) -> float:
+        if not self._large_mode or self._n < 30:
+            return 0.0
+        anchor = self._area_anchors.get(shipper.id, shipper.position)
+        distance_from_anchor = self._manhattan(anchor, pickup)
+        excess = max(0.0, distance_from_anchor - self._activity_radius())
+        if excess <= 0.0:
+            return 0.0
+
+        area_weight = 0.004 + 0.030 * self._obstacle_ratio
+        if self._openness >= 0.90:
+            area_weight *= 0.65
+        return excess * area_weight
+
     def _large_prefilter_key(self, shipper: Shipper, order: Order, t: int) -> Tuple[float, ...]:
         pickup = (order.sx, order.sy)
         dropoff = (order.ex, order.ey)
         pickup_distance = self._manhattan(shipper.position, pickup)
-        route_distance = pickup_distance + self._manhattan(pickup, dropoff)
+        delivery_distance = self._manhattan(pickup, dropoff)
+        route_distance = pickup_distance + delivery_distance
         finish_t = t + route_distance
         reward = delivery_reward(order, finish_t, self._t_limit)
+        reward_per_step = reward / max(route_distance, 1)
+        area_penalty = self._activity_area_penalty(shipper, pickup)
+        adjusted_score = reward_per_step - area_penalty
+        pressure = len(shipper.bag) / max(1, shipper.K_max)
         return (
-            -reward,
-            pickup_distance,
+            1 if reward <= 0.0 else 0,
             1 if finish_t > order.et else 0,
+            -adjusted_score,
+            pickup_distance,
+            area_penalty,
+            pressure,
+            delivery_distance,
             order.et,
             -order.p,
             order.id,
@@ -364,6 +412,8 @@ class MAPDCBSSolver(Solver):
         reward = delivery_reward(order, finish_t, self._t_limit)
         reward_per_step = reward / max(route_distance, 1)
         reward_per_step *= 1.0 + 0.08 * self._hotspot_bonus(order)
+        area_penalty = self._activity_area_penalty(shipper, pickup)
+        adjusted_reward_per_step = reward_per_step - area_penalty
 
         carried = self._carried_orders(shipper, orders)
         insertion_penalty = 0
@@ -376,7 +426,8 @@ class MAPDCBSSolver(Solver):
         return (
             1 if reward <= 0.0 else 0,
             insertion_penalty,
-            -reward_per_step,
+            -adjusted_reward_per_step,
+            area_penalty,
             -0.02 * reward,
             1 if finish_t > order.et else 0,
             pickup_distance,
@@ -391,6 +442,7 @@ class MAPDCBSSolver(Solver):
         shippers: List[Shipper] = obs["shippers"]
         t = int(obs.get("t", 0))
         targets: Dict[int, Target] = {}
+        self._ensure_area_anchors(shippers)
 
         for shipper in shippers:
             carried = self._carried_orders(shipper, orders)
@@ -400,27 +452,21 @@ class MAPDCBSSolver(Solver):
             targets[shipper.id] = Target("deliver", order.id, (order.ex, order.ey))
 
         active_orders = [order for order in orders.values() if not order.picked and not order.delivered]
+        self._large_active_count = len(active_orders)
         if not active_orders:
             return targets
 
         candidate_limit = max(18, min(70, 3 * max(1, self._c)))
         exact_limit = max(3, min(5, self._c // 2))
         if self._n >= 70 or self._g >= 1000:
-            candidate_limit = max(16, min(36, 2 * max(1, self._c)))
+            candidate_limit = max(18, min(52, 2 * max(1, self._c)))
             exact_limit = 0
 
         pickup_pairs: List[Tuple[Tuple[float, ...], int, Order]] = []
         for shipper in shippers:
-            if (self._n >= 70 or self._g >= 1000) and shipper.id in targets:
-                continue
             if shipper.id in targets and len(shipper.bag) >= max(1, shipper.K_max):
                 continue
-            current_weight = sum(orders[oid].w for oid in shipper.bag if oid in orders)
-            remaining_weight = shipper.W_max - current_weight
-            remaining_slots = shipper.K_max - len(shipper.bag)
-            if remaining_slots <= 0 or remaining_weight <= 0:
-                continue
-            feasible = [order for order in active_orders if order.w <= remaining_weight]
+            feasible = [order for order in active_orders if shipper.can_carry(order, orders)]
             if not feasible:
                 continue
             if len(feasible) > candidate_limit:
@@ -440,7 +486,7 @@ class MAPDCBSSolver(Solver):
                 )
                 if exact_limit > 0 and (rank[0] or rank[4] >= 0.0):
                     continue
-                if exact_limit == 0 and rank[0] and rank[4]:
+                if exact_limit == 0 and rank[0] and rank[5]:
                     continue
                 pickup_pairs.append((rank, shipper.id, order))
 

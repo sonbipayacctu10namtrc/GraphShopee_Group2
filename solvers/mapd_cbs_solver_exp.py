@@ -44,7 +44,7 @@ class MAPDCBSSolver(Solver):
     - thực thi bước đầu tiên, sau đó lặp lại khi env sinh đơn mới.
     """
 
-    method_name = "MAPD-CBS"
+    method_name = "MAPD-CBS-EXP"
 
     def __init__(self, env: DeliveryEnv):
         super().__init__(env)
@@ -342,13 +342,19 @@ class MAPDCBSSolver(Solver):
         pickup = (order.sx, order.sy)
         dropoff = (order.ex, order.ey)
         pickup_distance = self._manhattan(shipper.position, pickup)
-        route_distance = pickup_distance + self._manhattan(pickup, dropoff)
+        delivery_distance = self._manhattan(pickup, dropoff)
+        route_distance = pickup_distance + delivery_distance
         finish_t = t + route_distance
         reward = delivery_reward(order, finish_t, self._t_limit)
+        reward_per_step = reward / max(route_distance, 1)
+        pressure = len(shipper.bag) / max(1, shipper.K_max)
         return (
-            -reward,
-            pickup_distance,
+            1 if reward <= 0.0 else 0,
             1 if finish_t > order.et else 0,
+            -reward_per_step,
+            pickup_distance,
+            pressure,
+            delivery_distance,
             order.et,
             -order.p,
             order.id,
@@ -406,21 +412,14 @@ class MAPDCBSSolver(Solver):
         candidate_limit = max(18, min(70, 3 * max(1, self._c)))
         exact_limit = max(3, min(5, self._c // 2))
         if self._n >= 70 or self._g >= 1000:
-            candidate_limit = max(16, min(36, 2 * max(1, self._c)))
+            candidate_limit = max(18, min(52, 2 * max(1, self._c)))
             exact_limit = 0
 
         pickup_pairs: List[Tuple[Tuple[float, ...], int, Order]] = []
         for shipper in shippers:
-            if (self._n >= 70 or self._g >= 1000) and shipper.id in targets:
-                continue
             if shipper.id in targets and len(shipper.bag) >= max(1, shipper.K_max):
                 continue
-            current_weight = sum(orders[oid].w for oid in shipper.bag if oid in orders)
-            remaining_weight = shipper.W_max - current_weight
-            remaining_slots = shipper.K_max - len(shipper.bag)
-            if remaining_slots <= 0 or remaining_weight <= 0:
-                continue
-            feasible = [order for order in active_orders if order.w <= remaining_weight]
+            feasible = [order for order in active_orders if shipper.can_carry(order, orders)]
             if not feasible:
                 continue
             if len(feasible) > candidate_limit:
