@@ -42,15 +42,14 @@ class ACOSolver(Solver):
 
     def _candidate_limit(self) -> int:
         if self._N >= 80:
-            return 10
+            return 25
         if self._N >= 50:
-            return 18
-        if self._N >= 30:
             return 35
-        return 80
+        if self._N >= 30:
+            return 50
+        return 100
 
     def _enable_extra_pickup(self) -> bool:
-        # Map lớn: không vòng vèo gom thêm, dễ mất deadline.
         return 12 <= self._N <= 30
 
     def _manhattan(self, a: Position, b: Position) -> int:
@@ -157,10 +156,12 @@ class ACOSolver(Solver):
     ) -> bool:
         if order.picked or order.delivered:
             return False
+
         if len(shipper.bag) >= shipper.K_max:
             return False
 
         current_w = self._current_weight(shipper, orders)
+
         return current_w + order.w <= shipper.W_max
 
     # ============================================================
@@ -191,6 +192,7 @@ class ACOSolver(Solver):
 
         for h_pos, weight in self._dynamic_hotspots.items():
             dist = self._manhattan(pos, h_pos)
+
             if dist <= 3:
                 bonus += weight / (1.0 + dist)
 
@@ -214,7 +216,10 @@ class ACOSolver(Solver):
                 self._pheromone.pop(key, None)
                 continue
 
-            value = max(self._min_pheromone, self._pheromone[key] * (1.0 - self._rho))
+            value = max(
+                self._min_pheromone,
+                self._pheromone[key] * (1.0 - self._rho),
+            )
 
             if math.isclose(value, self._min_pheromone):
                 self._pheromone.pop(key, None)
@@ -224,7 +229,11 @@ class ACOSolver(Solver):
     def _reinforce(self, task_type: str, order_id: int, amount: float) -> None:
         key = self._pheromone_key(task_type, order_id)
         current = self._pheromone.get(key, 1.0)
-        self._pheromone[key] = min(self._max_pheromone, current + amount)
+
+        self._pheromone[key] = min(
+            self._max_pheromone,
+            current + amount,
+        )
 
     # ============================================================
     # Candidate filtering
@@ -257,6 +266,36 @@ class ACOSolver(Solver):
         return candidates[:limit]
 
     # ============================================================
+    # Best pickup at position
+    # ============================================================
+
+    def _best_pickup_at_pos(
+        self,
+        shipper: Shipper,
+        orders: Dict[int, Order],
+        pos: Position,
+    ) -> Optional[Order]:
+        candidates = [
+            o for o in orders.values()
+            if not o.picked
+            and not o.delivered
+            and (o.sx, o.sy) == pos
+            and self._can_carry_online(shipper, o, orders)
+        ]
+
+        if not candidates:
+            return None
+
+        return max(
+            candidates,
+            key=lambda o: (
+                o.p,
+                -o.et,
+                -o.id,
+            ),
+        )
+
+    # ============================================================
     # Heuristics
     # ============================================================
 
@@ -271,10 +310,12 @@ class ACOSolver(Solver):
         delivery_pos = (order.ex, order.ey)
 
         d1 = self._distance(shipper.position, pickup_pos)
+
         if d1 >= INF:
             return 0.0
 
         d2 = self._distance(pickup_pos, delivery_pos)
+
         if d2 >= INF:
             return 0.0
 
@@ -282,15 +323,21 @@ class ACOSolver(Solver):
         finish_t = t + d1 + d2
 
         est_reward = delivery_reward(order, finish_t, T_max)
+
         current_w = self._current_weight(shipper, orders)
 
-        cost_d1 = abs(self._step_travel_cost("U", current_w, shipper.W_max)) * d1
-        cost_d2 = abs(self._step_travel_cost("U", current_w + order.w, shipper.W_max)) * d2
+        cost_d1 = abs(
+            self._step_travel_cost("U", current_w, shipper.W_max)
+        ) * d1
+
+        cost_d2 = abs(
+            self._step_travel_cost("U", current_w + order.w, shipper.W_max)
+        ) * d2
 
         hotspot_bonus = self._get_hotspot_bonus(pickup_pos)
+
         net_profit = est_reward - cost_d1 - cost_d2 + hotspot_bonus
 
-        # Map lớn: ưu tiên đơn gần hơn để tránh đi quá xa.
         if self._N >= 50:
             return max(0.01, net_profit) / (1.0 + 1.5 * d1 + 0.4 * d2)
 
@@ -363,6 +410,7 @@ class ACOSolver(Solver):
                         continue
 
                     h_val = self._pickup_heuristic(shipper, order, orders, t)
+
                     if h_val <= 0.0:
                         continue
 
@@ -370,7 +418,10 @@ class ACOSolver(Solver):
                         self._get_pheromone("pickup", order.id) ** self._alpha
                     ) * (h_val ** self._beta)
 
-                    manh = self._manhattan(shipper.position, (order.sx, order.sy))
+                    manh = self._manhattan(
+                        shipper.position,
+                        (order.sx, order.sy),
+                    )
 
                     if self._N >= 50:
                         rank = (
@@ -395,6 +446,7 @@ class ACOSolver(Solver):
                 break
 
             sid, order = best_candidate
+
             assignments[sid] = order
             taken_orders.add(order.id)
             available_shippers.remove(sid)
@@ -402,25 +454,8 @@ class ACOSolver(Solver):
         return assignments
 
     # ============================================================
-    # Cargo action helpers
+    # Delivery helpers
     # ============================================================
-
-    def _pickup_available_after_move(
-        self,
-        shipper: Shipper,
-        orders: Dict[int, Order],
-        next_pos: Position,
-    ) -> bool:
-        for order in orders.values():
-            if order.picked or order.delivered:
-                continue
-            if (order.sx, order.sy) != next_pos:
-                continue
-            if not self._can_carry_online(shipper, order, orders):
-                continue
-            return True
-
-        return False
 
     def _has_delivery_after_move(
         self,
@@ -436,6 +471,7 @@ class ACOSolver(Solver):
 
             if order.delivered:
                 continue
+
             if (order.ex, order.ey) == next_pos:
                 return True
 
@@ -452,8 +488,10 @@ class ACOSolver(Solver):
     ) -> Move:
         for move in MOVES:
             nxt = valid_next_pos(current, move, self.grid)
+
             if nxt != current and nxt not in blocked_positions:
                 return move
+
         return "S"
 
     # ============================================================
@@ -476,7 +514,11 @@ class ACOSolver(Solver):
             return None
 
         delivery_pos = (delivery_order.ex, delivery_order.ey)
-        delivery_dist = self._distance(shipper.position, delivery_pos)
+
+        delivery_dist = self._distance(
+            shipper.position,
+            delivery_pos,
+        )
 
         if delivery_dist >= INF:
             return None
@@ -484,14 +526,21 @@ class ACOSolver(Solver):
         best_extra: Optional[Order] = None
         best_rank = (INF, INF, INF, INF)
 
-        for order in self._unpicked_candidates_for_shipper(shipper, orders, limit=20):
+        for order in self._unpicked_candidates_for_shipper(
+            shipper,
+            orders,
+            limit=20,
+        ):
             pickup_pos = (order.sx, order.sy)
-            pickup_dist = self._distance(shipper.position, pickup_pos)
+
+            pickup_dist = self._distance(
+                shipper.position,
+                pickup_pos,
+            )
 
             if pickup_dist >= INF:
                 continue
 
-            # Chặt hơn để không phá map lớn / deadline.
             if pickup_dist <= 3 and pickup_dist + 2 < delivery_dist:
                 rank = (
                     pickup_dist,
@@ -526,13 +575,22 @@ class ACOSolver(Solver):
         idle_shippers: List[Shipper] = []
 
         for shipper in shippers:
-            target = self._best_delivery_target(shipper, orders, t)
+            target = self._best_delivery_target(
+                shipper,
+                orders,
+                t,
+            )
+
             delivery_targets[shipper.id] = target
 
             if target is None:
                 idle_shippers.append(shipper)
 
-        assigned_pickups = self._assign_pickups(idle_shippers, orders, t)
+        assigned_pickups = self._assign_pickups(
+            idle_shippers,
+            orders,
+            t,
+        )
 
         for shipper in sorted(shippers, key=lambda s: s.id):
             move: Move = "S"
@@ -552,67 +610,143 @@ class ACOSolver(Solver):
                 delivery_order = None
 
             # ---------------- Delivery ----------------
+
             if delivery_order is not None:
-                target_pos = (delivery_order.ex, delivery_order.ey)
-                move = self._next_move(shipper.position, target_pos)
+                target_pos = (
+                    delivery_order.ex,
+                    delivery_order.ey,
+                )
+
+                move = self._next_move(
+                    shipper.position,
+                    target_pos,
+                )
 
                 if move not in MOVES:
                     move = "S"
 
-                next_pos = valid_next_pos(shipper.position, move, self.grid)
+                next_pos = valid_next_pos(
+                    shipper.position,
+                    move,
+                    self.grid,
+                )
 
                 if move != "S" and next_pos in occupied_next_positions:
-                    move = self._find_alternative_move(shipper.position, occupied_next_positions)
-                    next_pos = valid_next_pos(shipper.position, move, self.grid)
+                    move = self._find_alternative_move(
+                        shipper.position,
+                        occupied_next_positions,
+                    )
 
-                if self._has_delivery_after_move(shipper, orders, next_pos):
+                    next_pos = valid_next_pos(
+                        shipper.position,
+                        move,
+                        self.grid,
+                    )
+
+                if self._has_delivery_after_move(
+                    shipper,
+                    orders,
+                    next_pos,
+                ):
                     cargo_op = 2
+
                     self._reinforce(
                         "deliver",
                         delivery_order.id,
-                        delivery_reward(delivery_order, t + 1, T_max) * 0.05,
+                        delivery_reward(
+                            delivery_order,
+                            t + 1,
+                            T_max,
+                        ) * 0.05,
                     )
 
             # ---------------- Pickup ----------------
+
             elif pickup_order is not None:
-                target_pos = (pickup_order.sx, pickup_order.sy)
-                move = self._next_move(shipper.position, target_pos)
+                target_pos = (
+                    pickup_order.sx,
+                    pickup_order.sy,
+                )
+
+                move = self._next_move(
+                    shipper.position,
+                    target_pos,
+                )
 
                 if move not in MOVES:
                     move = "S"
 
-                next_pos = valid_next_pos(shipper.position, move, self.grid)
+                next_pos = valid_next_pos(
+                    shipper.position,
+                    move,
+                    self.grid,
+                )
 
                 if move != "S" and next_pos in occupied_next_positions:
-                    move = self._find_alternative_move(shipper.position, occupied_next_positions)
-                    next_pos = valid_next_pos(shipper.position, move, self.grid)
+                    move = self._find_alternative_move(
+                        shipper.position,
+                        occupied_next_positions,
+                    )
 
-                if self._pickup_available_after_move(shipper, orders, next_pos):
+                    next_pos = valid_next_pos(
+                        shipper.position,
+                        move,
+                        self.grid,
+                    )
+
+                best_here = self._best_pickup_at_pos(
+                    shipper,
+                    orders,
+                    next_pos,
+                )
+
+                if best_here is not None and best_here.id == pickup_order.id:
                     cargo_op = 1
 
                     finish_t = t + 1 + self._distance(
                         next_pos,
-                        (pickup_order.ex, pickup_order.ey),
+                        (
+                            pickup_order.ex,
+                            pickup_order.ey,
+                        ),
                     )
 
                     self._reinforce(
                         "pickup",
                         pickup_order.id,
-                        delivery_reward(pickup_order, finish_t, T_max) * 0.05,
+                        delivery_reward(
+                            pickup_order,
+                            finish_t,
+                            T_max,
+                        ) * 0.05,
                     )
 
-            # ---------------- Idle cargo fallback ----------------
+            # ---------------- Idle fallback ----------------
+
             else:
                 move = "S"
                 next_pos = shipper.position
 
-                if self._has_delivery_after_move(shipper, orders, next_pos):
+                if self._has_delivery_after_move(
+                    shipper,
+                    orders,
+                    next_pos,
+                ):
                     cargo_op = 2
-                elif self._pickup_available_after_move(shipper, orders, next_pos):
+
+                elif self._best_pickup_at_pos(
+                    shipper,
+                    orders,
+                    next_pos,
+                ) is not None:
                     cargo_op = 1
 
             occupied_next_positions.add(
-                valid_next_pos(shipper.position, move, self.grid)
+                valid_next_pos(
+                    shipper.position,
+                    move,
+                    self.grid,
+                )
             )
 
             actions[shipper.id] = (move, cargo_op)
@@ -630,6 +764,7 @@ class ACOSolver(Solver):
 
         while not obs.get("done", False):
             active_order_ids = set(obs["orders"].keys())
+
             self._evaporate_pheromone(active_order_ids)
 
             actions = self._decide_actions(obs)
