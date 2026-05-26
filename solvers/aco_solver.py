@@ -17,7 +17,7 @@ MOVES: Tuple[Move, ...] = ("U", "D", "L", "R")
 
 
 class ACOSolver(Solver):
-    method_name = "ACO_Strict_Final_v6_LargeMap"
+    method_name = "ACO_Strict"
 
     def __init__(self, env: DeliveryEnv):
         super().__init__(env)
