@@ -1,0 +1,35 @@
+{
+  "config_name": "T03_dense_obstacles",
+  "orders_total_fixed": 350,
+  "online_generation": true,
+  "results": [
+    {
+      "method": "ACO_Strict_Final_v6_LargeMap",
+      "config_name": "T03_dense_obstacles",
+      "total_orders": 350,
+      "orders_generated": 350,
+      "delivered": 249,
+      "on_time": 118,
+      "late": 131,
+      "missed": 101,
+      "delivery_rate": 71.14285714285714,
+      "on_time_rate": 47.389558232931726,
+      "total_reward": 2889.4222,
+      "total_movecost": -117.122,
+      "net_reward": 2772.3001,
+      "elapsed_sec": 27.56,
+      "shipper_rewards": [
+        231.7257,
+        257.9317,
+        495.3787,
+        381.0334,
+        331.401,
+        337.309,
+        308.3314,
+        429.1891
+      ],
+      "status": "OK",
+      "wall_sec": 27.59
+    }
+  ]
+}

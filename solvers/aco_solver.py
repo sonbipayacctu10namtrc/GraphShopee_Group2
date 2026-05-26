@@ -42,12 +42,12 @@ class ACOSolver(Solver):
 
     def _candidate_limit(self) -> int:
         if self._N >= 80:
-            return 25
+            return 10
         if self._N >= 50:
-            return 35
+            return 18
         if self._N >= 30:
-            return 50
-        return 100
+            return 35
+        return 80
 
     def _enable_extra_pickup(self) -> bool:
         # Map lớn: không vòng vèo gom thêm, dễ mất deadline.

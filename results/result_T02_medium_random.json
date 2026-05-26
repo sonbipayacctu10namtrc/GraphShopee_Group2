@@ -1,0 +1,32 @@
+{
+  "config_name": "T02_medium_random",
+  "orders_total_fixed": 150,
+  "online_generation": true,
+  "results": [
+    {
+      "method": "ACO_Strict_Final_v6_LargeMap",
+      "config_name": "T02_medium_random",
+      "total_orders": 150,
+      "orders_generated": 150,
+      "delivered": 139,
+      "on_time": 98,
+      "late": 41,
+      "missed": 11,
+      "delivery_rate": 92.66666666666667,
+      "on_time_rate": 70.50359712230215,
+      "total_reward": 1832.1813,
+      "total_movecost": -37.0388,
+      "net_reward": 1795.1426,
+      "elapsed_sec": 1.511,
+      "shipper_rewards": [
+        399.3859,
+        383.5168,
+        208.6447,
+        437.3938,
+        366.2013
+      ],
+      "status": "OK",
+      "wall_sec": 1.52
+    }
+  ]
+}

@@ -1,0 +1,39 @@
+{
+  "config_name": "T04_bottleneck_2cell",
+  "orders_total_fixed": 700,
+  "online_generation": true,
+  "results": [
+    {
+      "method": "ACO_Strict_Final_v6_LargeMap",
+      "config_name": "T04_bottleneck_2cell",
+      "total_orders": 700,
+      "orders_generated": 700,
+      "delivered": 309,
+      "on_time": 70,
+      "late": 239,
+      "missed": 391,
+      "delivery_rate": 44.142857142857146,
+      "on_time_rate": 22.653721682847895,
+      "total_reward": 1810.7416,
+      "total_movecost": -187.8553,
+      "net_reward": 1622.8863,
+      "elapsed_sec": 167.8409,
+      "shipper_rewards": [
+        145.6239,
+        237.2104,
+        124.9981,
+        135.5736,
+        98.3517,
+        105.1828,
+        175.7802,
+        52.8592,
+        156.6844,
+        136.6791,
+        122.8432,
+        131.0996
+      ],
+      "status": "OK",
+      "wall_sec": 167.93
+    }
+  ]
+}
