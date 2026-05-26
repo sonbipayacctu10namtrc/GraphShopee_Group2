@@ -42,11 +42,11 @@ class ACOSolver(Solver):
 
     def _candidate_limit(self) -> int:
         if self._N >= 80:
-            return 25
+            return 18
         if self._N >= 50:
-            return 35
+            return 28
         if self._N >= 30:
-            return 50
+            return 40
         return 100
 
     def _enable_extra_pickup(self) -> bool:
@@ -700,8 +700,9 @@ class ACOSolver(Solver):
                     next_pos,
                 )
 
-                if best_here is not None and best_here.id == pickup_order.id:
+                if best_here is not None:
                     cargo_op = 1
+                    pickup_order = best_here
 
                     finish_t = t + 1 + self._distance(
                         next_pos,
