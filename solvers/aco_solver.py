@@ -3,7 +3,7 @@ from __future__ import annotations
 import math
 import time
 from collections import deque
-from typing import Dict, Iterable, List, Optional, Tuple, Set, Any
+from typing import Any, Dict, Iterable, List, Optional, Set, Tuple
 
 from env import DeliveryEnv, Order, Shipper, delivery_reward, is_valid_cell, valid_next_pos
 from solvers.solver import Solver
@@ -17,7 +17,7 @@ MOVES: Tuple[Move, ...] = ("U", "D", "L", "R")
 
 
 class ACOSolver(Solver):
-    method_name = "ACO_Strict"
+    method_name = "ACO_Strict_Online"
 
     def __init__(self, env: DeliveryEnv):
         super().__init__(env)
@@ -62,7 +62,7 @@ class ACOSolver(Solver):
                 yield move, nxt
 
     # ============================================================
-    # BFS with cache
+    # BFS cache
     # ============================================================
 
     def _bfs_parents(
@@ -137,7 +137,7 @@ class ACOSolver(Solver):
         return self._compute_path_properties(start, goal)[1]
 
     # ============================================================
-    # Cost / capacity
+    # Capacity / cost
     # ============================================================
 
     def _step_travel_cost(self, move: Move, current_w: float, max_w: float) -> float:
@@ -161,25 +161,15 @@ class ACOSolver(Solver):
             return False
 
         current_w = self._current_weight(shipper, orders)
-
         return current_w + order.w <= shipper.W_max
 
     # ============================================================
-    # Hotspot
+    # Online hotspot only
+    # Không đọc env.config, không đọc file config, không đọc surge/hotspot ẩn.
+    # Chỉ học từ orders đã reveal trong obs.
     # ============================================================
 
-    def _update_hotspot_beliefs(self, orders: Dict[int, Order], t: int) -> None:
-        config_source = self.cfg if self.cfg else getattr(self.env, "config", {})
-
-        static_hotspots = config_source.get("hotspots", [])
-        surge_windows = config_source.get("surge_windows", [])
-
-        in_surge = any(ts <= t <= te for ts, te in surge_windows)
-
-        if static_hotspots and in_surge:
-            self._dynamic_hotspots = {tuple(pos): 4.0 for pos in static_hotspots}
-            return
-
+    def _update_hotspot_beliefs(self, orders: Dict[int, Order]) -> None:
         self._dynamic_hotspots.clear()
 
         for order in orders.values():
@@ -216,10 +206,7 @@ class ACOSolver(Solver):
                 self._pheromone.pop(key, None)
                 continue
 
-            value = max(
-                self._min_pheromone,
-                self._pheromone[key] * (1.0 - self._rho),
-            )
+            value = max(self._min_pheromone, self._pheromone[key] * (1.0 - self._rho))
 
             if math.isclose(value, self._min_pheromone):
                 self._pheromone.pop(key, None)
@@ -229,11 +216,7 @@ class ACOSolver(Solver):
     def _reinforce(self, task_type: str, order_id: int, amount: float) -> None:
         key = self._pheromone_key(task_type, order_id)
         current = self._pheromone.get(key, 1.0)
-
-        self._pheromone[key] = min(
-            self._max_pheromone,
-            current + amount,
-        )
+        self._pheromone[key] = min(self._max_pheromone, current + amount)
 
     # ============================================================
     # Candidate filtering
@@ -265,10 +248,6 @@ class ACOSolver(Solver):
 
         return candidates[:limit]
 
-    # ============================================================
-    # Best pickup at position
-    # ============================================================
-
     def _best_pickup_at_pos(
         self,
         shipper: Shipper,
@@ -286,17 +265,10 @@ class ACOSolver(Solver):
         if not candidates:
             return None
 
-        return max(
-            candidates,
-            key=lambda o: (
-                o.p,
-                -o.et,
-                -o.id,
-            ),
-        )
+        return max(candidates, key=lambda o: (o.p, -o.et, -o.id))
 
     # ============================================================
-    # Heuristics
+    # Heuristic
     # ============================================================
 
     def _pickup_heuristic(
@@ -305,38 +277,37 @@ class ACOSolver(Solver):
         order: Order,
         orders: Dict[int, Order],
         t: int,
+        T_max: int,
     ) -> float:
         pickup_pos = (order.sx, order.sy)
         delivery_pos = (order.ex, order.ey)
 
         d1 = self._distance(shipper.position, pickup_pos)
-
         if d1 >= INF:
             return 0.0
 
         d2 = self._distance(pickup_pos, delivery_pos)
-
         if d2 >= INF:
             return 0.0
 
-        T_max = int(self.cfg.get("T", 240))
         finish_t = t + d1 + d2
-
         est_reward = delivery_reward(order, finish_t, T_max)
 
         current_w = self._current_weight(shipper, orders)
 
-        cost_d1 = abs(
-            self._step_travel_cost("U", current_w, shipper.W_max)
-        ) * d1
-
-        cost_d2 = abs(
-            self._step_travel_cost("U", current_w + order.w, shipper.W_max)
-        ) * d2
+        cost_d1 = abs(self._step_travel_cost("U", current_w, shipper.W_max)) * d1
+        cost_d2 = abs(self._step_travel_cost("U", current_w + order.w, shipper.W_max)) * d2
 
         hotspot_bonus = self._get_hotspot_bonus(pickup_pos)
 
-        net_profit = est_reward - cost_d1 - cost_d2 + hotspot_bonus
+        urgency_bonus = 0.0
+        remaining = order.et - finish_t
+        if remaining >= 0:
+            urgency_bonus = 1.0 / (1.0 + remaining)
+        else:
+            urgency_bonus = -0.5
+
+        net_profit = est_reward - cost_d1 - cost_d2 + hotspot_bonus + urgency_bonus
 
         if self._N >= 50:
             return max(0.01, net_profit) / (1.0 + 1.5 * d1 + 0.4 * d2)
@@ -388,6 +359,7 @@ class ACOSolver(Solver):
         shippers: List[Shipper],
         orders: Dict[int, Order],
         t: int,
+        T_max: int,
     ) -> Dict[int, Order]:
         assignments: Dict[int, Order] = {}
 
@@ -409,7 +381,7 @@ class ACOSolver(Solver):
                     if order.id in taken_orders:
                         continue
 
-                    h_val = self._pickup_heuristic(shipper, order, orders, t)
+                    h_val = self._pickup_heuristic(shipper, order, orders, t, T_max)
 
                     if h_val <= 0.0:
                         continue
@@ -418,10 +390,7 @@ class ACOSolver(Solver):
                         self._get_pheromone("pickup", order.id) ** self._alpha
                     ) * (h_val ** self._beta)
 
-                    manh = self._manhattan(
-                        shipper.position,
-                        (order.sx, order.sy),
-                    )
+                    manh = self._manhattan(shipper.position, (order.sx, order.sy))
 
                     if self._N >= 50:
                         rank = (
@@ -446,7 +415,6 @@ class ACOSolver(Solver):
                 break
 
             sid, order = best_candidate
-
             assignments[sid] = order
             taken_orders.add(order.id)
             available_shippers.remove(sid)
@@ -454,7 +422,7 @@ class ACOSolver(Solver):
         return assignments
 
     # ============================================================
-    # Delivery helpers
+    # Delivery / collision helpers
     # ============================================================
 
     def _has_delivery_after_move(
@@ -477,10 +445,6 @@ class ACOSolver(Solver):
 
         return False
 
-    # ============================================================
-    # Collision
-    # ============================================================
-
     def _find_alternative_move(
         self,
         current: Position,
@@ -493,10 +457,6 @@ class ACOSolver(Solver):
                 return move
 
         return "S"
-
-    # ============================================================
-    # Extra pickup before delivery
-    # ============================================================
 
     def _maybe_extra_pickup_before_delivery(
         self,
@@ -514,11 +474,7 @@ class ACOSolver(Solver):
             return None
 
         delivery_pos = (delivery_order.ex, delivery_order.ey)
-
-        delivery_dist = self._distance(
-            shipper.position,
-            delivery_pos,
-        )
+        delivery_dist = self._distance(shipper.position, delivery_pos)
 
         if delivery_dist >= INF:
             return None
@@ -526,17 +482,9 @@ class ACOSolver(Solver):
         best_extra: Optional[Order] = None
         best_rank = (INF, INF, INF, INF)
 
-        for order in self._unpicked_candidates_for_shipper(
-            shipper,
-            orders,
-            limit=20,
-        ):
+        for order in self._unpicked_candidates_for_shipper(shipper, orders, limit=20):
             pickup_pos = (order.sx, order.sy)
-
-            pickup_dist = self._distance(
-                shipper.position,
-                pickup_pos,
-            )
+            pickup_dist = self._distance(shipper.position, pickup_pos)
 
             if pickup_dist >= INF:
                 continue
@@ -563,10 +511,9 @@ class ACOSolver(Solver):
         orders: Dict[int, Order] = obs["orders"]
         shippers: List[Shipper] = obs["shippers"]
         t = int(obs.get("t", 0))
+        T_max = int(obs.get("T", 240))
 
-        T_max = int(self.cfg.get("T", 240))
-
-        self._update_hotspot_beliefs(orders, t)
+        self._update_hotspot_beliefs(orders)
 
         actions: Dict[int, Action] = {}
         occupied_next_positions: Set[Position] = set()
@@ -575,22 +522,13 @@ class ACOSolver(Solver):
         idle_shippers: List[Shipper] = []
 
         for shipper in shippers:
-            target = self._best_delivery_target(
-                shipper,
-                orders,
-                t,
-            )
-
+            target = self._best_delivery_target(shipper, orders, t)
             delivery_targets[shipper.id] = target
 
             if target is None:
                 idle_shippers.append(shipper)
 
-        assigned_pickups = self._assign_pickups(
-            idle_shippers,
-            orders,
-            t,
-        )
+        assigned_pickups = self._assign_pickups(idle_shippers, orders, t, T_max)
 
         for shipper in sorted(shippers, key=lambda s: s.id):
             move: Move = "S"
@@ -612,93 +550,50 @@ class ACOSolver(Solver):
             # ---------------- Delivery ----------------
 
             if delivery_order is not None:
-                target_pos = (
-                    delivery_order.ex,
-                    delivery_order.ey,
-                )
+                target_pos = (delivery_order.ex, delivery_order.ey)
 
-                move = self._next_move(
-                    shipper.position,
-                    target_pos,
-                )
+                move = self._next_move(shipper.position, target_pos)
 
                 if move not in MOVES:
                     move = "S"
 
-                next_pos = valid_next_pos(
-                    shipper.position,
-                    move,
-                    self.grid,
-                )
+                next_pos = valid_next_pos(shipper.position, move, self.grid)
 
                 if move != "S" and next_pos in occupied_next_positions:
                     move = self._find_alternative_move(
                         shipper.position,
                         occupied_next_positions,
                     )
+                    next_pos = valid_next_pos(shipper.position, move, self.grid)
 
-                    next_pos = valid_next_pos(
-                        shipper.position,
-                        move,
-                        self.grid,
-                    )
-
-                if self._has_delivery_after_move(
-                    shipper,
-                    orders,
-                    next_pos,
-                ):
+                if self._has_delivery_after_move(shipper, orders, next_pos):
                     cargo_op = 2
-
                     self._reinforce(
                         "deliver",
                         delivery_order.id,
-                        delivery_reward(
-                            delivery_order,
-                            t + 1,
-                            T_max,
-                        ) * 0.05,
+                        delivery_reward(delivery_order, t + 1, T_max) * 0.05,
                     )
 
             # ---------------- Pickup ----------------
 
             elif pickup_order is not None:
-                target_pos = (
-                    pickup_order.sx,
-                    pickup_order.sy,
-                )
+                target_pos = (pickup_order.sx, pickup_order.sy)
 
-                move = self._next_move(
-                    shipper.position,
-                    target_pos,
-                )
+                move = self._next_move(shipper.position, target_pos)
 
                 if move not in MOVES:
                     move = "S"
 
-                next_pos = valid_next_pos(
-                    shipper.position,
-                    move,
-                    self.grid,
-                )
+                next_pos = valid_next_pos(shipper.position, move, self.grid)
 
                 if move != "S" and next_pos in occupied_next_positions:
                     move = self._find_alternative_move(
                         shipper.position,
                         occupied_next_positions,
                     )
+                    next_pos = valid_next_pos(shipper.position, move, self.grid)
 
-                    next_pos = valid_next_pos(
-                        shipper.position,
-                        move,
-                        self.grid,
-                    )
-
-                best_here = self._best_pickup_at_pos(
-                    shipper,
-                    orders,
-                    next_pos,
-                )
+                best_here = self._best_pickup_at_pos(shipper, orders, next_pos)
 
                 if best_here is not None:
                     cargo_op = 1
@@ -706,20 +601,13 @@ class ACOSolver(Solver):
 
                     finish_t = t + 1 + self._distance(
                         next_pos,
-                        (
-                            pickup_order.ex,
-                            pickup_order.ey,
-                        ),
+                        (pickup_order.ex, pickup_order.ey),
                     )
 
                     self._reinforce(
                         "pickup",
                         pickup_order.id,
-                        delivery_reward(
-                            pickup_order,
-                            finish_t,
-                            T_max,
-                        ) * 0.05,
+                        delivery_reward(pickup_order, finish_t, T_max) * 0.05,
                     )
 
             # ---------------- Idle fallback ----------------
@@ -728,26 +616,14 @@ class ACOSolver(Solver):
                 move = "S"
                 next_pos = shipper.position
 
-                if self._has_delivery_after_move(
-                    shipper,
-                    orders,
-                    next_pos,
-                ):
+                if self._has_delivery_after_move(shipper, orders, next_pos):
                     cargo_op = 2
 
-                elif self._best_pickup_at_pos(
-                    shipper,
-                    orders,
-                    next_pos,
-                ) is not None:
+                elif self._best_pickup_at_pos(shipper, orders, next_pos) is not None:
                     cargo_op = 1
 
             occupied_next_positions.add(
-                valid_next_pos(
-                    shipper.position,
-                    move,
-                    self.grid,
-                )
+                valid_next_pos(shipper.position, move, self.grid)
             )
 
             actions[shipper.id] = (move, cargo_op)
