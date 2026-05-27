@@ -17,7 +17,7 @@
       "total_reward": 248.5495,
       "total_movecost": -0.8832,
       "net_reward": 247.6663,
-      "elapsed_sec": 0.0288,
+      "elapsed_sec": 0.025,
       "shipper_rewards": [
         221.8134,
         25.8529

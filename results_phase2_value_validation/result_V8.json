@@ -1,0 +1,32 @@
+{
+  "config_name": "V8",
+  "orders_total_fixed": 95,
+  "online_generation": true,
+  "results": [
+    {
+      "method": "MAPD-CBS",
+      "config_name": "V8",
+      "total_orders": 95,
+      "orders_generated": 95,
+      "delivered": 44,
+      "on_time": 36,
+      "late": 8,
+      "missed": 51,
+      "delivery_rate": 46.31578947368421,
+      "on_time_rate": 81.81818181818181,
+      "total_reward": 565.8649,
+      "total_movecost": -12.1027,
+      "net_reward": 553.7622,
+      "elapsed_sec": 0.3323,
+      "shipper_rewards": [
+        65.3326,
+        175.5969,
+        111.4818,
+        170.2617,
+        31.0891
+      ],
+      "status": "OK",
+      "wall_sec": 0.33
+    }
+  ]
+}

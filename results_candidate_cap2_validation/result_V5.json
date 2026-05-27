@@ -1,0 +1,32 @@
+{
+  "config_name": "V5",
+  "orders_total_fixed": 85,
+  "online_generation": true,
+  "results": [
+    {
+      "method": "MAPD-CBS",
+      "config_name": "V5",
+      "total_orders": 85,
+      "orders_generated": 85,
+      "delivered": 38,
+      "on_time": 34,
+      "late": 4,
+      "missed": 47,
+      "delivery_rate": 44.705882352941174,
+      "on_time_rate": 89.47368421052632,
+      "total_reward": 651.8988,
+      "total_movecost": -8.9636,
+      "net_reward": 642.9352,
+      "elapsed_sec": 0.2799,
+      "shipper_rewards": [
+        151.374,
+        181.5083,
+        159.5835,
+        147.414,
+        3.0555
+      ],
+      "status": "OK",
+      "wall_sec": 0.28
+    }
+  ]
+}

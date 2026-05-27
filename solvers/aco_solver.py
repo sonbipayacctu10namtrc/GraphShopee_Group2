@@ -345,6 +345,8 @@ class ACOSolver(Solver):
     def run(self) -> dict:
         start_time = time.time()
         obs = self.env.reset()
+        self.grid = obs["grid"]
+        self.cfg = {"N": obs["N"], "C": obs["C"], "G": obs["G"], "T": obs["T"]}
 
         while not obs.get("done", False):
             self._evaporate_pheromone()

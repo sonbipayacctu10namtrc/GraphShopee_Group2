@@ -1,0 +1,49 @@
+{
+  "config_name": "P2S7",
+  "orders_total_fixed": 1300,
+  "online_generation": true,
+  "results": [
+    {
+      "method": "MAPD-CBS",
+      "config_name": "P2S7",
+      "total_orders": 1300,
+      "orders_generated": 1300,
+      "delivered": 253,
+      "on_time": 183,
+      "late": 70,
+      "missed": 1047,
+      "delivery_rate": 19.46153846153846,
+      "on_time_rate": 72.33201581027669,
+      "total_reward": 3627.3462,
+      "total_movecost": -273.0359,
+      "net_reward": 3354.3103,
+      "elapsed_sec": 108.506,
+      "shipper_rewards": [
+        497.4089,
+        26.7318,
+        658.0871,
+        248.7463,
+        36.5519,
+        136.1532,
+        29.8304,
+        61.7093,
+        50.6146,
+        205.5818,
+        165.3648,
+        147.8548,
+        78.5915,
+        39.3961,
+        273.115,
+        168.1632,
+        185.5276,
+        222.7399,
+        -8.1106,
+        67.8714,
+        47.0362,
+        15.3451
+      ],
+      "status": "OK",
+      "wall_sec": 110.14
+    }
+  ]
+}

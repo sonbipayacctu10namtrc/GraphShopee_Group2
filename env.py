@@ -1,4 +1,4 @@
-"""
+﻿"""
 env.py — Online MAPD Graph Environment
 =========================================
 
@@ -257,13 +257,19 @@ def _apply_moves(
     return reward
 
 
-def _order_rate(t: int, cfg: dict) -> float:
-    """Tốc độ sinh đơn lambda(t): lambda0*(1+A) trong surge window, lambda0 ngoài."""
-    lam      = float(cfg.get("lambda0", cfg["G"] / max(cfg["T"], 1)))
-    amp      = float(cfg.get("surge_amplitude", 3.0))
-    in_surge = any(ts <= t <= te for ts, te in cfg.get("surge_windows", []))
+def _order_rate(
+    t: int,
+    lambda0: float,
+    surge_windows: List[Tuple[int, int]],
+    surge_amplitude: float,
+    G: int,
+    T: int,
+) -> float:
+    """Toc do sinh don lambda(t): lambda0*(1+A) trong surge window, lambda0 ngoai."""
+    lam = float(lambda0 if lambda0 is not None else G / max(T, 1))
+    amp = float(surge_amplitude)
+    in_surge = any(ts <= t <= te for ts, te in surge_windows)
     return lam * (1.0 + amp) if in_surge else lam
-
 
 def _start_positions(N: int, C: int, free_cells: List[Tuple[int, int]]) -> List[Tuple[int, int]]:
     """Chọn C vị trí xuất phát trải đều: ưu tiên 5 neo góc/tâm, sau đó max-min distance."""
@@ -285,14 +291,19 @@ def _start_positions(N: int, C: int, free_cells: List[Tuple[int, int]]) -> List[
     return selected
 
 
-def _init_shippers(cfg: dict, free_cells: List[Tuple[int, int]]) -> List[Shipper]:
-    """Khởi tạo list Shipper từ config; vị trí từ _start_positions()."""
-    positions = _start_positions(cfg["N"], cfg["C"], free_cells)
+def _init_shippers(
+    N: int,
+    C: int,
+    W_max: List[float],
+    K_max: List[int],
+    free_cells: List[Tuple[int, int]],
+) -> List[Shipper]:
+    """Khoi tao list Shipper tu tham so rieng le; vi tri tu _start_positions()."""
+    positions = _start_positions(N, C, free_cells)
     return [
-        Shipper(i, r, c, float(cfg["W_max"][i]), int(cfg["K_max"][i]))
+        Shipper(i, r, c, float(W_max[i]), int(K_max[i]))
         for i, (r, c) in enumerate(positions)
     ]
-
 
 # ---------------------------------------------------------------------------
 # Config I/O
@@ -334,15 +345,27 @@ def parse_grid(lines: List[str], idx: int, N: int) -> Tuple[List[List[int]], int
 
 
 def load_config(filepath: str) -> List[dict]:
-    """Đọc file config theo cấu trúc [CONFIG] ... [MAP] ... [END]; trả list các cfg dict."""
+    """Doc file config theo cau truc [SEED] ... [CONFIG] ... [MAP] ... [END]; tra list cfg."""
     with open(filepath, "r", encoding="utf-8") as f:
         lines = [line.rstrip() for line in f]
 
     configs: List[dict] = []
+    base_seed = 42
     i = 0
+
+    if i < len(lines) and _strip_comment(lines[i]) == "[SEED]":
+        i += 1
+        line = _strip_comment(lines[i])
+        key, val = [x.strip() for x in line.split("=", 1)]
+        if key != "base_seed":
+            raise ValueError("Block [SEED] chi ho tro dong 'base_seed = ...'.")
+        base_seed = int(val)
+        i += 1
+
     while i < len(lines):
         if _strip_comment(lines[i]) != "[CONFIG]":
-            i += 1; continue
+            i += 1
+            continue
 
         cfg: dict = {}
         i += 1
@@ -350,30 +373,40 @@ def load_config(filepath: str) -> List[dict]:
             line = _strip_comment(lines[i])
             if line and "=" in line:
                 key, val = [x.strip() for x in line.split("=", 1)]
-                if   key == "K_max":                        cfg[key] = list(map(int,   val.split()))
-                elif key == "W_max":                        cfg[key] = list(map(float, val.split()))
-                elif key in {"N", "C", "G", "T"}:          cfg[key] = int(val)
-                elif key in {"surge_windows", "hotspots"}:  cfg[key] = _parse_int_pairs(val, key)
-                elif key in {"surge_amplitude", "lambda0"}: cfg[key] = float(val)
-                else:                                        cfg[key] = val
+                if key == "K_max":
+                    cfg[key] = list(map(int, val.split()))
+                elif key == "W_max":
+                    cfg[key] = list(map(float, val.split()))
+                elif key in {"N", "C", "G", "T"}:
+                    cfg[key] = int(val)
+                elif key in {"surge_windows", "hotspots"}:
+                    cfg[key] = _parse_int_pairs(val, key)
+                elif key in {"surge_amplitude", "lambda0"}:
+                    cfg[key] = float(val)
+                else:
+                    cfg[key] = val
             i += 1
 
         for key in ["name", "N", "C", "G", "T", "K_max", "W_max"]:
             if key not in cfg:
-                raise ValueError(f"Thiếu '{key}' trong một [CONFIG].")
+                raise ValueError(f"Thieu '{key}' trong mot [CONFIG].")
+
         cfg["K_max"] = _normalize_shipper_list(cfg, "K_max", int)
         cfg["W_max"] = _normalize_shipper_list(cfg, "W_max", float)
+        cfg["base_seed"] = base_seed
 
         if i >= len(lines) or _strip_comment(lines[i]) != "[MAP]":
-            raise ValueError(f"Config '{cfg.get('name')}' thiếu [MAP].")
+            raise ValueError(f"Config '{cfg.get('name')}' thieu [MAP].")
         i += 1
+
         cfg["grid"], i = parse_grid(lines, i, cfg["N"])
+
         if i < len(lines) and _strip_comment(lines[i]) == "[END]":
             i += 1
+
         configs.append(cfg)
 
     return configs
-
 
 # ---------------------------------------------------------------------------
 # Internal env utilities (không public vì phụ thuộc random state)
@@ -429,64 +462,56 @@ def _binomial_draw(n: int, p: float, rng: random.Random) -> int:
 
 class DeliveryEnv:
     """
-    Stateful online simulator — vòng lặp chính cho solver và grader.
-
-    Public API:
-        reset()                     -> obs
-        step(actions)               -> (obs, reward, done, info)
-        observe()                   -> obs
-        info()                      -> dict
-        result(method, elapsed_sec) -> dict
-
-    Private (đột biến state nội bộ, không thể là pure function):
-        _reveal_orders()    — sinh đơn mới vào self.orders
-        _new_order_count()  — tính số đơn cần sinh tại bước hiện tại
-        _sample_order()     — tạo một Order ngẫu nhiên, tăng next_order_id
-        _deliver()          — giao hàng + cập nhật delivered/on_time/late
+    Stateful online simulator - vong lap chinh cho solver va grader.
     """
 
     def __init__(self, cfg: dict, seed: int = SEED, rng: Optional[random.Random] = None):
-        raw_cfg         = copy.deepcopy(cfg)
-        self.raw_cfg    = raw_cfg
-        self.public_cfg = copy.deepcopy(raw_cfg)
-        self.cfg        = _resolve_generation_params(copy.deepcopy(raw_cfg), seed)
-        self.grid       = copy.deepcopy(raw_cfg["grid"])
-        self.N, self.C, self.G, self.T = raw_cfg["N"], raw_cfg["C"], raw_cfg["G"], raw_cfg["T"]
-        self.seed       = seed
-        self._rng_seed  = _stable_seed(str(raw_cfg.get("name", "unknown")), seed)
+        config_data = copy.deepcopy(cfg)
+        self.config_name = config_data.get("name", "unknown")
+        self.grid = copy.deepcopy(config_data["grid"])
+        self.N, self.C, self.G, self.T = config_data["N"], config_data["C"], config_data["G"], config_data["T"]
+        self.__rng_seed = _stable_seed(str(self.config_name), seed)
+        self.__W_max = [float(x) for x in config_data["W_max"]]
+        self.__K_max = [int(x) for x in config_data["K_max"]]
 
-        initial_rng = rng if rng is not None else random.Random(self._rng_seed)
-        self._initial_rng_state = initial_rng.getstate()
+        resolved = _resolve_generation_params(copy.deepcopy(config_data), seed)
+        self.__lambda0 = float(resolved["lambda0"])
+        self.__surge_windows = resolved.get("surge_windows", [])
+        self.__hotspots = resolved.get("hotspots", [])
+        self.__surge_amplitude = float(resolved.get("surge_amplitude", 3.0))
+
+        initial_rng = rng if rng is not None else random.Random(self.__rng_seed)
+        self.__initial_rng_state = initial_rng.getstate()
 
         self.free_cells = _free_cells(self.grid)
         if not self.free_cells:
-            raise ValueError("Bản đồ không có ô trống.")
+            raise ValueError("Ban do khong co o trong.")
         self.reset()
 
-    # ------------------------------------------------------------------
-    # Public API
-    # ------------------------------------------------------------------
-
     def reset(self) -> dict:
-        """Reset về trạng thái ban đầu; replay cùng episode (seed cố định)."""
-        self.rng = random.Random()
-        self.rng.setstate(self._initial_rng_state)
+        """Reset ve trang thai ban dau; replay cung episode."""
+        self.__rng = random.Random()
+        self.__rng.setstate(self.__initial_rng_state)
         self.t = 0
-        self.next_order_id   = 0
+        self.next_order_id = 0
         self.generated_count = 0
         self.orders: Dict[int, Order] = {}
         self.new_orders_last_step: List[int] = []
-        self.shippers        = _init_shippers(self.cfg, self.free_cells)
-        self.total_reward    = 0.0
-        self.total_movecost  = 0.0
+        self.shippers = _init_shippers(self.N, self.C, self.__W_max, self.__K_max, self.free_cells)
+        self.total_reward = 0.0
+        self.total_movecost = 0.0
         self.delivered = self.on_time = self.late = 0
-        self._reveal_orders()
+        self.__reveal_orders()
         return self.observe()
 
     def observe(self) -> dict:
-        """Trả snapshot trạng thái hiện tại cho solver (deep-copy nhẹ)."""
+        """Tra snapshot trang thai hien tai cho solver."""
         return {
-            "t": self.t, "N": self.N, "C": self.C, "G": self.G, "T": self.T,
+            "t": self.t,
+            "N": self.N,
+            "C": self.C,
+            "G": self.G,
+            "T": self.T,
             "grid": self.grid,
             "orders": {
                 oid: Order(o.id, o.sx, o.sy, o.ex, o.ey, o.et, o.w, o.p, o.appear_t,
@@ -502,12 +527,7 @@ class DeliveryEnv:
         }
 
     def step(self, actions: Any) -> Tuple[dict, float, bool, dict]:
-        """
-        Thực thi một bước mô phỏng.
-
-        Thứ tự: Di chuyển -> Nhặt hàng -> Giao hàng -> Sinh đơn mới.
-        Trả (obs, reward_buoc, done, info).
-        """
+        """Thuc thi mot buoc mo phong."""
         if self.t >= self.T:
             return self.observe(), 0.0, True, self.info()
 
@@ -528,106 +548,102 @@ class DeliveryEnv:
                 shipper.pickup_best(self.orders)
                 continue
             if is_delivery_op(op):
-                step_reward += self._deliver_many(shipper)
+                step_reward += self.__deliver_many(shipper)
 
         self.total_reward += step_reward
         self.t += 1
         if self.t < self.T:
-            self._reveal_orders()
+            self.__reveal_orders()
         return self.observe(), step_reward, self.t >= self.T, self.info()
 
     def info(self) -> dict:
-        """Thống kê tích lũy đến bước hiện tại."""
+        """Thong ke tich luy den buoc hien tai."""
         return {
-            "generated":      self.generated_count,
-            "total_orders":   self.G,
-            "delivered":      self.delivered,
-            "on_time":        self.on_time,
-            "late":           self.late,
-            "missed":         self.G - self.delivered,
-            "total_reward":   self.total_reward,
+            "generated": self.generated_count,
+            "total_orders": self.G,
+            "delivered": self.delivered,
+            "on_time": self.on_time,
+            "late": self.late,
+            "missed": self.G - self.delivered,
+            "total_reward": self.total_reward,
             "total_movecost": self.total_movecost,
-            "net_reward":     self.total_reward,
+            "net_reward": self.total_reward,
         }
 
     def result(self, method: str, elapsed_sec: float = 0.0) -> dict:
-        """Kết quả cuối episode cho grader/report."""
+        """Ket qua cuoi episode cho grader/report."""
         return {
-            "method":           method,
-            "config_name":      self.raw_cfg.get("name", "unknown"),
-            "total_orders":     self.G,
+            "method": method,
+            "config_name": self.config_name,
+            "total_orders": self.G,
             "orders_generated": self.generated_count,
-            "delivered":        self.delivered,
-            "on_time":          self.on_time,
-            "late":             self.late,
-            "missed":           self.G - self.delivered,
-            "delivery_rate":    100.0 * self.delivered / max(self.G, 1),
-            "on_time_rate":     100.0 * self.on_time / max(self.delivered, 1),
-            "total_reward":     round(self.total_reward - self.total_movecost, 4),
-            "total_movecost":   round(self.total_movecost, 4),
-            "net_reward":       round(self.total_reward, 4),
-            "elapsed_sec":      round(elapsed_sec, 4),
-            "shipper_rewards":  [round(s.total_reward, 4) for s in self.shippers],
-            "status":           "OK",
+            "delivered": self.delivered,
+            "on_time": self.on_time,
+            "late": self.late,
+            "missed": self.G - self.delivered,
+            "delivery_rate": 100.0 * self.delivered / max(self.G, 1),
+            "on_time_rate": 100.0 * self.on_time / max(self.delivered, 1),
+            "total_reward": round(self.total_reward - self.total_movecost, 4),
+            "total_movecost": round(self.total_movecost, 4),
+            "net_reward": round(self.total_reward, 4),
+            "elapsed_sec": round(elapsed_sec, 4),
+            "shipper_rewards": [round(s.total_reward, 4) for s in self.shippers],
+            "status": "OK",
         }
 
-    # ------------------------------------------------------------------
-    # Private — đột biến state nội bộ env (rng, orders, counters)
-    # ------------------------------------------------------------------
-
-    def _reveal_orders(self) -> None:
-        """Sinh đơn mới vào self.orders theo số lượng tính bởi _new_order_count."""
+    def __reveal_orders(self) -> None:
+        """Sinh don moi vao self.orders theo so luong tinh boi __new_order_count."""
         self.new_orders_last_step = []
-        for _ in range(self._new_order_count()):
-            o = self._sample_order()
-            self.orders[o.id] = o
+        for _ in range(self.__new_order_count()):
+            order = self.__sample_order()
+            self.orders[order.id] = order
             self.generated_count += 1
-            self.new_orders_last_step.append(o.id)
+            self.new_orders_last_step.append(order.id)
 
-    def _new_order_count(self) -> int:
-        """Số đơn cần sinh tại bước t, đảm bảo tổng đúng G đơn khi kết thúc."""
+    def __new_order_count(self) -> int:
+        """So don can sinh tai buoc t, dam bao tong dung G don khi ket thuc."""
         remaining = self.G - self.generated_count
-        if remaining <= 0:       return 0
-        if self.T - self.t <= 1: return remaining
-        now    = _order_rate(self.t, self.cfg)
-        future = sum(_order_rate(tt, self.cfg) for tt in range(self.t, self.T))
-        return _binomial_draw(remaining, now / max(future, 1e-12), self.rng)
+        if remaining <= 0:
+            return 0
+        if self.T - self.t <= 1:
+            return remaining
+        now = _order_rate(self.t, self.__lambda0, self.__surge_windows, self.__surge_amplitude, self.G, self.T)
+        future = sum(
+            _order_rate(tt, self.__lambda0, self.__surge_windows, self.__surge_amplitude, self.G, self.T)
+            for tt in range(self.t, self.T)
+        )
+        return _binomial_draw(remaining, now / max(future, 1e-12), self.__rng)
 
-    def _sample_order(self) -> Order:
-        """Sinh một Order ngẫu nhiên (có thể tập trung vào hotspot nếu đang surge)."""
-        src      = self.rng.choice(self.free_cells)
-        hotspots = self.cfg.get("hotspots", [])
-        in_surge = any(ts <= self.t <= te for ts, te in self.cfg.get("surge_windows", []))
+    def __sample_order(self) -> Order:
+        """Sinh mot Order ngau nhien."""
+        src = self.__rng.choice(self.free_cells)
+        hotspots = self.__hotspots
+        in_surge = any(ts <= self.t <= te for ts, te in self.__surge_windows)
 
-        if in_surge and hotspots and self.rng.random() < HOTSPOT_PROB:
-            center = self.rng.choice(hotspots)
+        if in_surge and hotspots and self.__rng.random() < HOTSPOT_PROB:
+            center = self.__rng.choice(hotspots)
             nearby = [c for c in self.free_cells if manhattan(c[0], c[1], center[0], center[1]) <= HOTSPOT_RADIUS]
-            src = self.rng.choice(nearby or self.free_cells)
+            src = self.__rng.choice(nearby or self.free_cells)
 
         destinations = [c for c in self.free_cells if c != src]
-        dst      = self.rng.choice(destinations or self.free_cells)
-        priority = self.rng.choices([1, 2, 3], weights=[0.5, 0.3, 0.2])[0]
-        weight   = self.rng.choices([0.1, 1.0, 5.0, 15.0, 40.0], weights=[0.2, 0.4, 0.25, 0.1, 0.05])[0]
-        deadline = min(self.t + self.rng.randint(1, 6) * (4 - priority) * TIME_UNIT_PER_HOUR, self.T - 1)
+        dst = self.__rng.choice(destinations or self.free_cells)
+        priority = self.__rng.choices([1, 2, 3], weights=[0.5, 0.3, 0.2])[0]
+        weight = self.__rng.choices([0.1, 1.0, 5.0, 15.0, 40.0], weights=[0.2, 0.4, 0.25, 0.1, 0.05])[0]
+        deadline = min(self.t + self.__rng.randint(1, 6) * (4 - priority) * TIME_UNIT_PER_HOUR, self.T - 1)
 
         oid = self.next_order_id
         self.next_order_id += 1
         return Order(oid, src[0], src[1], dst[0], dst[1], deadline, weight, priority, self.t)
 
-    def _deliver_many(self, shipper: Shipper) -> float:
-        """Giao tất cả đơn hợp lệ tại vị trí hiện tại trong cùng timestep.
-
-        cargo_op = 2 không chỉ định id đơn. Vì vậy env duyệt toàn bộ bag của
-        shipper và để Shipper.deliver() kiểm tra điều kiện cuối cùng:
-        đơn phải đang được shipper mang và destination phải đúng vị trí hiện tại.
-        """
+    def __deliver_many(self, shipper: Shipper) -> float:
+        """Giao tat ca don hop le tai vi tri hien tai trong cung timestep."""
         total = 0.0
         for oid in list(shipper.bag):
-            total += self._deliver(shipper, oid)
+            total += self.__deliver(shipper, oid)
         return total
 
-    def _deliver(self, shipper: Shipper, oid: int) -> float:
-        """Giao đơn oid bởi shipper; cập nhật self.delivered / on_time / late."""
+    def __deliver(self, shipper: Shipper, oid: int) -> float:
+        """Giao don oid boi shipper; cap nhat delivered/on_time/late."""
         order = self.orders.get(oid)
         if order is None:
             return 0.0
@@ -636,6 +652,8 @@ class DeliveryEnv:
         if reward <= 0.0:
             return 0.0
         self.delivered += 1
-        if was_on_time: self.on_time += 1
-        else:           self.late += 1
+        if was_on_time:
+            self.on_time += 1
+        else:
+            self.late += 1
         return reward

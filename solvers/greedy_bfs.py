@@ -16,7 +16,7 @@ INF = 10**9
 
 MOVES: Tuple[Move, ...] = ("U", "D", "L", "R")
 PRINT_MAP_EVERY = 20
-WRITE_MAP_TO_FILE = True
+WRITE_MAP_TO_FILE = False
 PRINT_MAP_TO_TERMINAL = False
 
 
@@ -366,6 +366,8 @@ class GreedyBFS(Solver):
     def run(self) -> dict:
         start_time = time.time()
         obs = self.env.reset()
+        self.grid = obs["grid"]
+        self.cfg = {"N": obs["N"], "C": obs["C"], "G": obs["G"], "T": obs["T"]}
         map_log = None
 
         if WRITE_MAP_TO_FILE:
