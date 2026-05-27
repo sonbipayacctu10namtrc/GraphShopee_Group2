@@ -41,15 +41,13 @@ class ACOSolver(Solver):
         if self._N >= 80:
             return 12
         if self._N >= 50:
-            return 16
+            return 18
         if self._N >= 30:
-            return 30
-        if self._N >= 20:
-            return 80
-        return 100
+            return 32
+        return 80
 
     def _enable_extra_pickup(self) -> bool:
-        return 12 <= self._N <= 18
+        return 12 <= self._N <= 30
 
     def _manhattan(self, a: Position, b: Position) -> int:
         return abs(a[0] - b[0]) + abs(a[1] - b[1])
@@ -237,26 +235,15 @@ class ACOSolver(Solver):
 
             candidates = filtered
 
-        if self._N <= 25:
-            candidates.sort(
-                key=lambda o: (
-                    self._manhattan(shipper.position, (o.sx, o.sy))
-                    + 0.6 * self._manhattan((o.sx, o.sy), (o.ex, o.ey)),
-                    -o.p,
-                    o.et,
-                    o.id,
-                )
+        candidates.sort(
+            key=lambda o: (
+                -o.p,
+                self._manhattan(shipper.position, (o.sx, o.sy))
+                + 0.35 * self._manhattan((o.sx, o.sy), (o.ex, o.ey)),
+                o.et,
+                o.id,
             )
-        else:
-            candidates.sort(
-                key=lambda o: (
-                    -o.p,
-                    self._manhattan(shipper.position, (o.sx, o.sy))
-                    + 0.35 * self._manhattan((o.sx, o.sy), (o.ex, o.ey)),
-                    o.et,
-                    o.id,
-                )
-            )
+        )
 
         return candidates[:limit]
 
@@ -465,9 +452,6 @@ class ACOSolver(Solver):
         delivery_order: Optional[Order],
         orders: Dict[int, Order],
     ) -> Optional[Order]:
-        if self._N >= 50:
-            return None
-
         if delivery_order is None:
             return None
 
