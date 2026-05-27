@@ -563,3 +563,44 @@ $env:PYTHONIOENCODING='utf-8'; python run_test.py --config phase2_stress_config.
 ### Ghi chu
 - Toan bo policy van chi dung observation hien tai: grid, shippers, visible orders, new_order_ids, N/C/G/T trong obs.
 - Khong doc env internals, khong doc config file, khong dung surge/hotspot hidden.
+
+## 2026-05-27 - Restore main rolling-horizon CBS under compliance rules
+
+### Thay doi
+- File: `solvers/mapd_cbs_solver_exp.py`
+  - Lay lai thuat toan manh tu nhanh main: rolling-horizon target assignment, CBS planning, fallback action, large-map mode, hotspot tracker online.
+  - Bo hoan toan viec doc `env.public_cfg`, `env.N`, `env.C`, `env.G`, `env.T`.
+  - Them `_refresh_from_obs(obs)` de cap nhat `grid/N/C/G/T` tu observation hien tai moi timestep.
+  - Tat ca tinh reward/deadline/window/large-mode dung du lieu trong `obs`, khong dung surge/hotspot hidden.
+- File: `solvers/mapd_cbs_solver.py`
+  - Chuyen thanh wrapper cho `MAPDCBSSolver` compliant trong `mapd_cbs_solver_exp.py`.
+
+### Ly do
+Sau merge, neu giu solver compliant cu thi diem public chi dat `2515.71`. Solver main dat cao hon nhung vi pham rule do doc truc tiep env internals. Lan nay giu logic toi uu cua main, nhung doi nguon du lieu sang observation hop le.
+
+### Kiem tra
+
+```powershell
+python -B -m py_compile solvers\mapd_cbs_solver.py solvers\mapd_cbs_solver_exp.py solvers\hotspot_tracker.py solvers\solver.py env.py run_test.py
+$env:PYTHONDONTWRITEBYTECODE='1'; $env:PYTHONIOENCODING='utf-8'; python -B run_test.py --config test_config.txt --out results_after_merge_restored_final --method MAPDCBSSolver
+```
+
+Grep compliance:
+
+```powershell
+rg "env\\.cfg|public_cfg|env\\.grid|env\\.N|env\\.C|env\\.G|env\\.T|load_config|open\\(" solvers\mapd_cbs_solver.py solvers\mapd_cbs_solver_exp.py solvers\solver.py
+```
+
+Khong co ket qua.
+
+### Ket qua
+
+```text
+Sau merge truoc khi sua: 2515.71
+Sau khi restore main logic compliant: 5713.45
+Origin/main tren cung test_config sau merge: 5713.45
+```
+
+### Ghi chu
+- Diem da ve lai muc main tren public config hien tai.
+- Solver chinh van khong doc config file va khong doc thong tin an trong env.
