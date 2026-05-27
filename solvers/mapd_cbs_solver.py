@@ -48,23 +48,37 @@ class MAPDCBSSolver(Solver):
 
     def __init__(self, env: DeliveryEnv):
         super().__init__(env)
-        self.cfg = getattr(
-            env,
-            "public_cfg",
-            {"N": env.N, "C": env.C, "G": env.G, "T": env.T, "name": "unknown"},
-        )
         self._distance_cache: Dict[Tuple[Position, Position], int] = {}
         self._next_move_cache: Dict[Tuple[Position, Position], Move] = {}
         self._path_cache: Dict[Tuple[Position, Position], Optional[List[Position]]] = {}
         self._counter = 0
-        self._n = int(self.cfg.get("N", 12))
-        self._c = int(self.cfg.get("C", 1))
-        self._g = int(self.cfg.get("G", 0))
-        self._t_limit = int(self.cfg.get("T", 1))
-        self._large_mode = self._c >= 12 or self._g >= 500
-        self._planning_window = max(12, min(34, self._n + 8))
+        self._n = 0
+        self._c = 0
+        self._g = 0
+        self._t_limit = 1
+        self._large_mode = False
+        self._planning_window = 12
         self._max_cbs_nodes = 20
         self._hotspot_tracker = HotspotTracker(window=80, radius=3, max_hotspots=3)
+        self._new_order_history: deque[Tuple[int, int]] = deque()
+        self._surge_score = 0.0
+        self._active_pressure = 0.0
+        self._sticky_pickups: Dict[int, Tuple[int, int, float]] = {}
+
+    def _refresh_from_obs(self, obs: dict) -> None:
+        grid = obs["grid"]
+        if self.grid is not grid:
+            self.grid = grid
+            self._distance_cache.clear()
+            self._next_move_cache.clear()
+            self._path_cache.clear()
+
+        self._n = int(obs.get("N", len(self.grid)))
+        self._c = int(obs.get("C", len(obs.get("shippers", []))))
+        self._g = int(obs.get("G", len(obs.get("orders", {}))))
+        self._t_limit = int(obs.get("T", max(1, obs.get("t", 0) + 1)))
+        self._large_mode = self._c >= 12 or self._g >= 500
+        self._planning_window = max(12, min(34, self._n + 8))
 
     # ------------------------------------------------------------------
     # Grid utilities
@@ -155,7 +169,7 @@ class MAPDCBSSolver(Solver):
         distance = self._distance(shipper.position, (order.ex, order.ey))
         finish_t = t + distance
         slack = order.et - finish_t
-        reward_per_step = delivery_reward(order, finish_t, int(self.cfg.get("T", 1))) / max(distance, 1)
+        reward_per_step = delivery_reward(order, finish_t, self._t_limit) / max(distance, 1)
         return (
             1 if distance >= INF else 0,
             -reward_per_step,
@@ -167,15 +181,25 @@ class MAPDCBSSolver(Solver):
         )
 
     def _hotspot_bonus(self, order: Order) -> float:
-        n = int(self.cfg.get("N", len(self.grid)))
-        c = int(self.cfg.get("C", 1))
+        n = self._n
+        c = self._c
         if n < 18 or (n >= 30 and c <= 3):
             return 0.0
-        return self._hotspot_tracker.score((order.sx, order.sy))
+        return self._hotspot_tracker.score((order.sx, order.sy)) * (1.0 + 0.20 * self._surge_score)
+
+    def _update_surge_score(self, obs: dict) -> None:
+        t = int(obs.get("t", 0))
+        self._new_order_history.append((t, len(obs.get("new_order_ids", []))))
+        window = 60
+        while self._new_order_history and t - self._new_order_history[0][0] > window:
+            self._new_order_history.popleft()
+        recent_rate = sum(count for _, count in self._new_order_history) / max(1, window)
+        base_rate = self._g / max(1, self._t_limit)
+        self._surge_score = max(0.0, min(1.0, (recent_rate / max(base_rate, 1e-6) - 1.0) / 3.0))
 
     def _region_weight(self) -> float:
-        n = int(self.cfg.get("N", len(self.grid)))
-        c = max(1, int(self.cfg.get("C", 1)))
+        n = self._n
+        c = max(1, self._c)
         total = max(1, n * n)
         blocked = sum(cell == 1 for row in self.grid for cell in row)
         obstacle_ratio = blocked / total
@@ -192,7 +216,7 @@ class MAPDCBSSolver(Solver):
         return min(weight, 0.44)
 
     def _region_of(self, pos: Position) -> int:
-        n = max(1, int(self.cfg.get("N", len(self.grid))))
+        n = max(1, self._n)
         r, c = pos
         return (0 if r < n // 2 else 2) + (0 if c < n // 2 else 1)
 
@@ -218,7 +242,7 @@ class MAPDCBSSolver(Solver):
         delivery_distance = self._distance(pickup, dropoff)
         finish_t = t + pickup_distance + delivery_distance
         route_distance = pickup_distance + delivery_distance
-        expected_reward = delivery_reward(order, finish_t, int(self.cfg.get("T", 1)))
+        expected_reward = delivery_reward(order, finish_t, self._t_limit)
         reward_per_step = expected_reward / max(route_distance, 1)
         reward_per_step *= 1.0 + 0.10 * self._hotspot_bonus(order)
 
@@ -259,7 +283,7 @@ class MAPDCBSSolver(Solver):
 
         route_distance = pickup_distance + delivery_distance
         finish_t = t + route_distance
-        reward = delivery_reward(order, finish_t, int(self.cfg.get("T", 1)))
+        reward = delivery_reward(order, finish_t, self._t_limit)
         lateness = max(0, finish_t - order.et)
         hotspot = 1.0 + 0.10 * self._hotspot_bonus(order)
         value = (
@@ -278,7 +302,7 @@ class MAPDCBSSolver(Solver):
         đi thực tế cho target đầu tiên ở tầng sau.
         """
         base_rank = self._pickup_rank(shipper, order, orders, t)
-        n = int(self.cfg.get("N", len(self.grid)))
+        n = self._n
         if n != 12:
             return base_rank
 
@@ -321,7 +345,7 @@ class MAPDCBSSolver(Solver):
         delivery_distance = self._distance(pickup, dropoff)
         if pickup_distance >= INF or delivery_distance >= INF:
             return 0.0
-        return delivery_reward(order, t + pickup_distance + delivery_distance, int(self.cfg.get("T", 1)))
+        return delivery_reward(order, t + pickup_distance + delivery_distance, self._t_limit)
 
     def _large_delivery_rank(self, shipper: Shipper, order: Order, t: int) -> Tuple[float, ...]:
         distance = self._distance(shipper.position, (order.ex, order.ey))
@@ -342,9 +366,22 @@ class MAPDCBSSolver(Solver):
         pickup = (order.sx, order.sy)
         dropoff = (order.ex, order.ey)
         pickup_distance = self._manhattan(shipper.position, pickup)
-        route_distance = pickup_distance + self._manhattan(pickup, dropoff)
+        delivery_distance = self._manhattan(pickup, dropoff)
+        route_distance = pickup_distance + delivery_distance
         finish_t = t + route_distance
         reward = delivery_reward(order, finish_t, self._t_limit)
+        if self._use_reward_per_step_prefilter():
+            reward_per_step = reward / max(route_distance, 1)
+            return (
+                1 if reward <= 0.0 else 0,
+                1 if finish_t > order.et else 0,
+                -reward_per_step,
+                pickup_distance,
+                delivery_distance,
+                order.et,
+                -order.p,
+                order.id,
+            )
         return (
             -reward,
             pickup_distance,
@@ -353,6 +390,11 @@ class MAPDCBSSolver(Solver):
             -order.p,
             order.id,
         )
+
+    def _use_reward_per_step_prefilter(self) -> bool:
+        if self._n < 55 and self._c <= 12 and self._active_pressure < 8.0:
+            return False
+        return self._n >= 55 or self._active_pressure >= 8.0 or self._surge_score >= 0.55
 
     def _large_pickup_rank(self, shipper: Shipper, order: Order, orders: Dict[int, Order], t: int) -> Tuple[float, ...]:
         pickup = (order.sx, order.sy)
@@ -386,6 +428,90 @@ class MAPDCBSSolver(Solver):
             order.id,
         )
 
+    def _large_pickup_value(self, shipper: Shipper, order: Order, t: int) -> float:
+        pickup = (order.sx, order.sy)
+        dropoff = (order.ex, order.ey)
+        pickup_distance = self._manhattan(shipper.position, pickup)
+        delivery_distance = self._manhattan(pickup, dropoff)
+        route_distance = pickup_distance + delivery_distance
+        finish_t = t + route_distance
+        reward = delivery_reward(order, finish_t, self._t_limit)
+        reward_per_step = reward / max(route_distance, 1)
+        lateness = max(0, finish_t - order.et)
+        return (
+            reward_per_step * (1.0 + 0.08 * self._hotspot_bonus(order))
+            + 0.015 * reward
+            + 0.12 * order.p
+            - 0.015 * pickup_distance
+            - 0.020 * lateness
+        )
+
+    def _apply_sticky_pickups(
+        self,
+        targets: Dict[int, Target],
+        shippers: List[Shipper],
+        orders: Dict[int, Order],
+        t: int,
+    ) -> Dict[int, Target]:
+        max_age = 8
+        keep_margin = 1.25
+        used_orders = {
+            target.order_id
+            for target in targets.values()
+            if target.kind == "pickup"
+        }
+
+        for shipper in shippers:
+            target = targets.get(shipper.id)
+            if target is not None and target.kind == "deliver":
+                self._sticky_pickups.pop(shipper.id, None)
+                continue
+
+            sticky = self._sticky_pickups.get(shipper.id)
+            if sticky is None:
+                continue
+            old_order_id, assigned_t, old_value = sticky
+            old_order = orders.get(old_order_id)
+            if (
+                old_order is None
+                or old_order.picked
+                or old_order.delivered
+                or t - assigned_t > max_age
+                or not shipper.can_carry(old_order, orders)
+            ):
+                self._sticky_pickups.pop(shipper.id, None)
+                continue
+
+            current_value = -1e9
+            if target is not None and target.kind == "pickup":
+                current_order = orders.get(target.order_id)
+                if current_order is not None:
+                    current_value = self._large_pickup_value(shipper, current_order, t)
+
+            sticky_value = self._large_pickup_value(shipper, old_order, t)
+            old_taken_by_other = old_order_id in used_orders and (target is None or target.order_id != old_order_id)
+            if old_taken_by_other:
+                continue
+            if target is None or current_value <= max(old_value, sticky_value) * keep_margin:
+                if target is not None and target.kind == "pickup":
+                    used_orders.discard(target.order_id)
+                targets[shipper.id] = Target("pickup", old_order.id, (old_order.sx, old_order.sy))
+                used_orders.add(old_order.id)
+
+        refreshed: Dict[int, Tuple[int, int, float]] = {}
+        for shipper in shippers:
+            target = targets.get(shipper.id)
+            if target is None or target.kind != "pickup":
+                continue
+            order = orders.get(target.order_id)
+            if order is None:
+                continue
+            previous = self._sticky_pickups.get(shipper.id)
+            assigned_t = previous[1] if previous is not None and previous[0] == order.id else t
+            refreshed[shipper.id] = (order.id, assigned_t, self._large_pickup_value(shipper, order, t))
+        self._sticky_pickups = refreshed
+        return targets
+
     def _assign_targets_large(self, obs: dict) -> Dict[int, Target]:
         orders: Dict[int, Order] = obs["orders"]
         shippers: List[Shipper] = obs["shippers"]
@@ -400,6 +526,7 @@ class MAPDCBSSolver(Solver):
             targets[shipper.id] = Target("deliver", order.id, (order.ex, order.ey))
 
         active_orders = [order for order in orders.values() if not order.picked and not order.delivered]
+        self._active_pressure = len(active_orders) / max(1, self._c)
         if not active_orders:
             return targets
 
@@ -407,7 +534,10 @@ class MAPDCBSSolver(Solver):
         exact_limit = max(3, min(5, self._c // 2))
         if self._n >= 70 or self._g >= 1000:
             candidate_limit = max(16, min(36, 2 * max(1, self._c)))
-            exact_limit = 0
+            exact_limit = 1 if self._active_pressure <= 3.0 and self._n < 90 else 0
+        elif self._active_pressure >= 8.0:
+            candidate_limit = max(18, min(54, 2 * max(1, self._c)))
+            exact_limit = max(2, min(4, self._c // 4))
 
         pickup_pairs: List[Tuple[Tuple[float, ...], int, Order]] = []
         for shipper in shippers:
@@ -453,7 +583,7 @@ class MAPDCBSSolver(Solver):
             used_shippers.add(shipper_id)
             used_orders.add(order.id)
 
-        return targets
+        return self._apply_sticky_pickups(targets, shippers, orders, t)
 
     def _assign_targets(self, obs: dict) -> Dict[int, Target]:
         orders: Dict[int, Order] = obs["orders"]
@@ -782,7 +912,9 @@ class MAPDCBSSolver(Solver):
         return actions
 
     def _decide_actions(self, obs: dict) -> Dict[int, Action]:
+        self._refresh_from_obs(obs)
         self._hotspot_tracker.update(obs)
+        self._update_surge_score(obs)
         if self._large_mode:
             return self._decide_actions_large(obs)
 
@@ -808,6 +940,11 @@ class MAPDCBSSolver(Solver):
         start_time = time.time()
         obs = self.env.reset()
         self._hotspot_tracker.reset()
+        self._refresh_from_obs(obs)
+        self._new_order_history.clear()
+        self._surge_score = 0.0
+        self._active_pressure = 0.0
+        self._sticky_pickups.clear()
 
         while not obs.get("done", False):
             actions = self._decide_actions(obs)
