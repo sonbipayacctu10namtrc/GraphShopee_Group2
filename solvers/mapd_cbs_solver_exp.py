@@ -74,7 +74,10 @@ class MAPDCBSSolver(Solver):
         self._g = int(obs.get("G", len(obs.get("orders", {}))))
         self._t_limit = int(obs.get("T", max(1, obs.get("t", 0) + 1)))
         self._large_mode = self._c >= 12 or self._g >= 500
-        self._planning_window = max(12, min(34, self._n + 8))
+        if not self._large_mode and self._n >= 35 and self._c >= 8:
+            self._planning_window = 26
+        else:
+            self._planning_window = max(12, min(34, self._n + 8))
 
     # ------------------------------------------------------------------
     # Grid utilities

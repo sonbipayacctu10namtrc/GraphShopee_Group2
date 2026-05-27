@@ -1,0 +1,30 @@
+{
+  "config_name": "C3",
+  "orders_total_fixed": 40,
+  "online_generation": true,
+  "results": [
+    {
+      "method": "MAPD-CBS",
+      "config_name": "C3",
+      "total_orders": 40,
+      "orders_generated": 40,
+      "delivered": 10,
+      "on_time": 10,
+      "late": 0,
+      "missed": 30,
+      "delivery_rate": 25.0,
+      "on_time_rate": 100.0,
+      "total_reward": 308.0716,
+      "total_movecost": -2.516,
+      "net_reward": 305.5556,
+      "elapsed_sec": 0.0952,
+      "shipper_rewards": [
+        246.3097,
+        59.7054,
+        -0.4595
+      ],
+      "status": "OK",
+      "wall_sec": 0.1
+    }
+  ]
+}
