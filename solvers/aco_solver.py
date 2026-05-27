@@ -37,14 +37,14 @@ class ACOSolver(Solver):
 
     def _candidate_limit(self) -> int:
         if self._N >= 100:
-            return 10
+            return 11
         if self._N >= 80:
-            return 12
+            return 15
         if self._N >= 50:
-            return 18
+            return 20
         if self._N >= 30:
-            return 32
-        return 80
+            return 40
+        return 100
 
     def _enable_extra_pickup(self) -> bool:
         return 12 <= self._N <= 30
