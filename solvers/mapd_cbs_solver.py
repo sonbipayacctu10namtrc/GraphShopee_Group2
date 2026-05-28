@@ -21,12 +21,16 @@ ALL_MOVES: Tuple[Move, ...] = ("S", "U", "D", "L", "R")
 
 
 class Target(NamedTuple):
+    """Current task target of one shipper: pickup or deliver one order at pos."""
+
     kind: TaskKind
     order_id: int
     pos: Position
 
 
 class Constraint(NamedTuple):
+    """CBS constraint: forbid a vertex at time, or an edge transition at time."""
+
     shipper_id: int
     kind: str
     pos: Position
@@ -35,7 +39,10 @@ class Constraint(NamedTuple):
 
 
 class _FlowEdge:
+    """Residual edge used by min-cost flow assignment."""
+
     def __init__(self, to: int, rev: int, cap: int, cost: int) -> None:
+        """Store residual endpoint, reverse-edge index, capacity and edge cost."""
         self.to = to
         self.rev = rev
         self.cap = cap
@@ -55,6 +62,7 @@ class MAPDCBSSolver(Solver):
     method_name = "MAPD-CBS"
 
     def __init__(self, env: DeliveryEnv):
+        """Initialize caches, online hotspot/surge state, and adaptive mode flags."""
         super().__init__(env)
         self._distance_cache: Dict[Tuple[Position, Position], int] = {}
         self._next_move_cache: Dict[Tuple[Position, Position], Move] = {}
@@ -74,6 +82,13 @@ class MAPDCBSSolver(Solver):
         self._sticky_pickups: Dict[int, Tuple[int, int, float]] = {}
 
     def _refresh_from_obs(self, obs: dict) -> None:
+        """
+        Refresh public instance parameters from observation only.
+
+        Large mode is enabled by C >= 12 or G >= 500; the planning window is
+        clamped to [12, 34]. If the grid object changes, cached paths/distances
+        are invalidated.
+        """
         grid = obs["grid"]
         if self.grid is not grid:
             self.grid = grid
@@ -92,6 +107,7 @@ class MAPDCBSSolver(Solver):
     # Grid utilities
     # ------------------------------------------------------------------
     def _neighbors(self, pos: Position, include_wait: bool = False) -> Iterable[Tuple[Move, Position]]:
+        """Yield valid next cells; include "S" only when waiting is useful for CBS/A*."""
         moves = ALL_MOVES if include_wait else MOVES
         for move in moves:
             nxt = valid_next_pos(pos, move, self.grid)
@@ -99,6 +115,12 @@ class MAPDCBSSolver(Solver):
                 yield move, nxt
 
     def _bfs_path(self, start: Position, goal: Position) -> Optional[List[Position]]:
+        """
+        Compute exact shortest path on the grid with BFS and cache it.
+
+        The resulting distance is len(path)-1. This is used both for assignment
+        scoring and as an admissible heuristic inside constrained A*.
+        """
         if not is_valid_cell(start, self.grid) or not is_valid_cell(goal, self.grid):
             return None
         if start == goal:
@@ -135,6 +157,7 @@ class MAPDCBSSolver(Solver):
         return path
 
     def _distance(self, start: Position, goal: Position) -> int:
+        """Return cached BFS shortest-path distance, or INF if unreachable."""
         if start == goal:
             return 0
         key = (start, goal)
@@ -144,9 +167,11 @@ class MAPDCBSSolver(Solver):
         return self._distance_cache[key]
 
     def _manhattan(self, start: Position, goal: Position) -> int:
+        """Fast lower-bound distance |dr|+|dc| used mainly for large-mode pruning."""
         return abs(start[0] - goal[0]) + abs(start[1] - goal[1])
 
     def _move_between(self, start: Position, nxt: Position) -> Move:
+        """Convert two adjacent cells into an env move; return "S" if unchanged/invalid."""
         if start == nxt:
             return "S"
         for move, pos in self._neighbors(start):
@@ -155,6 +180,7 @@ class MAPDCBSSolver(Solver):
         return "S"
 
     def _next_move(self, start: Position, goal: Position) -> Move:
+        """Return the first move of a cached BFS path from start to goal."""
         if start == goal:
             return "S"
         key = (start, goal)
@@ -167,6 +193,7 @@ class MAPDCBSSolver(Solver):
     # Task assignment
     # ------------------------------------------------------------------
     def _carried_orders(self, shipper: Shipper, orders: Dict[int, Order]) -> List[Order]:
+        """List undelivered orders currently carried by a shipper."""
         return [
             orders[oid]
             for oid in shipper.bag
@@ -174,6 +201,15 @@ class MAPDCBSSolver(Solver):
         ]
 
     def _delivery_rank(self, shipper: Shipper, order: Order, t: int) -> Tuple[int, int, int, int, int]:
+        """
+        Rank carried orders for delivery in small/medium mode.
+
+        Formula:
+          finish_t = t + d(shipper, dropoff)
+          rps = delivery_reward(order, finish_t, T) / max(d, 1)
+        Sort favors reachable, higher reward-per-step, on-time, shorter distance,
+        higher priority, then lower order id.
+        """
         distance = self._distance(shipper.position, (order.ex, order.ey))
         finish_t = t + distance
         slack = order.et - finish_t
@@ -189,6 +225,14 @@ class MAPDCBSSolver(Solver):
         )
 
     def _hotspot_bonus(self, order: Order) -> float:
+        """
+        Estimate pickup hotspot value from public revealed orders.
+
+        Formula:
+          bonus = hotspot_score(pickup) * (1 + 0.20 * surge_score)
+        The bonus is disabled on tiny maps or low-shipper large maps where it
+        caused unstable over-biasing.
+        """
         n = self._n
         c = self._c
         if n < 18 or (n >= 30 and c <= 3):
@@ -196,6 +240,14 @@ class MAPDCBSSolver(Solver):
         return self._hotspot_tracker.score((order.sx, order.sy)) * (1.0 + 0.20 * self._surge_score)
 
     def _update_surge_score(self, obs: dict) -> None:
+        """
+        Infer surge intensity from recent public new_order_ids.
+
+        Formula:
+          recent_rate = new_orders_in_last_60_steps / 60
+          base_rate = G / T
+          surge_score = clamp((recent_rate/base_rate - 1) / 3, 0, 1)
+        """
         t = int(obs.get("t", 0))
         self._new_order_history.append((t, len(obs.get("new_order_ids", []))))
         window = 60
@@ -206,6 +258,14 @@ class MAPDCBSSolver(Solver):
         self._surge_score = max(0.0, min(1.0, (recent_rate / max(base_rate, 1e-6) - 1.0) / 3.0))
 
     def _region_weight(self) -> float:
+        """
+        Compute region penalty weight for the N=18 case.
+
+        Formula:
+          obstacle_ratio = blocked / (N*N)
+          free_per_shipper = free / C
+          weight = 0.26 + obstacle_bonus + spacious_bonus, capped at 0.44
+        """
         n = self._n
         c = max(1, self._c)
         total = max(1, n * n)
@@ -224,11 +284,19 @@ class MAPDCBSSolver(Solver):
         return min(weight, 0.44)
 
     def _region_of(self, pos: Position) -> int:
+        """Map a position to one of four quadrants: 0, 1, 2, or 3."""
         n = max(1, self._n)
         r, c = pos
         return (0 if r < n // 2 else 2) + (0 if c < n // 2 else 1)
 
     def _region_penalty(self, shipper: Shipper, order: Order) -> float:
+        """
+        Penalize assigning an order outside the shipper's current quadrant.
+
+        Formula:
+          penalty = weight * (1.0 if pickup region differs else 0
+                              + 0.35 if dropoff region differs else 0)
+        """
         weight = self._region_weight()
         if weight <= 0.0:
             return 0.0
@@ -244,6 +312,17 @@ class MAPDCBSSolver(Solver):
         return weight * penalty
 
     def _pickup_rank(self, shipper: Shipper, order: Order, orders: Dict[int, Order], t: int) -> Tuple[float, ...]:
+        """
+        Rank pickup candidates in small/medium mode.
+
+        Formula:
+          route = d(shipper,pickup) + d(pickup,dropoff)
+          finish_t = t + route
+          rps = delivery_reward(order, finish_t, T) / max(route, 1)
+          rps *= 1 + 0.10 * hotspot_bonus
+        Also adds insertion_penalty if picking this order delays the best carried
+        delivery, and region_penalty if it pulls the shipper across regions.
+        """
         pickup = (order.sx, order.sy)
         dropoff = (order.ex, order.ey)
         pickup_distance = self._distance(shipper.position, pickup)
@@ -282,6 +361,13 @@ class MAPDCBSSolver(Solver):
         order: Order,
         t: int,
     ) -> Tuple[float, int]:
+        """
+        Score one order from an arbitrary start position for beam lookahead.
+
+        Formula:
+          value = reward * (1 + 0.10*hotspot)
+                  - 0.06*route_distance - 0.12*lateness + 0.8*priority
+        """
         pickup = (order.sx, order.sy)
         dropoff = (order.ex, order.ey)
         pickup_distance = self._distance(start, pickup)
@@ -304,10 +390,12 @@ class MAPDCBSSolver(Solver):
 
     def _beam_pickup_rank(self, shipper: Shipper, order: Order, orders: Dict[int, Order], t: int) -> Tuple[float, ...]:
         """
-        Nhìn trước một đơn kế tiếp sau khi giao order đầu tiên.
+        Look ahead after the first candidate order on N=12 maps.
 
-        Beam nhỏ này chỉ dùng để xếp hạng pickup đầu tiên; CBS vẫn lập đường
-        đi thực tế cho target đầu tiên ở tầng sau.
+        Formula:
+          lookahead = first_value + 0.35 * sum(top_2_followup_values)
+        The lookahead term is inserted into the pickup rank only for choosing the
+        first target; CBS still plans the actual step path afterward.
         """
         base_rank = self._pickup_rank(shipper, order, orders, t)
         n = self._n
@@ -339,6 +427,7 @@ class MAPDCBSSolver(Solver):
         )
 
     def _can_pickup(self, shipper: Shipper, order: Order, orders: Dict[int, Order]) -> bool:
+        """Check capacity/weight and reachability for shipper -> pickup -> dropoff."""
         if not shipper.can_carry(order, orders):
             return False
         return (
@@ -347,6 +436,7 @@ class MAPDCBSSolver(Solver):
         )
 
     def _expected_pickup_reward(self, shipper: Shipper, order: Order, t: int) -> float:
+        """Return delivery_reward at t + d(shipper,pickup) + d(pickup,dropoff)."""
         pickup = (order.sx, order.sy)
         dropoff = (order.ex, order.ey)
         pickup_distance = self._distance(shipper.position, pickup)
@@ -356,6 +446,13 @@ class MAPDCBSSolver(Solver):
         return delivery_reward(order, t + pickup_distance + delivery_distance, self._t_limit)
 
     def _large_delivery_rank(self, shipper: Shipper, order: Order, t: int) -> Tuple[float, ...]:
+        """
+        Rank carried orders in large mode.
+
+        Formula:
+          finish_t = t + d(shipper, dropoff)
+          score starts with -reward/max(distance,1), then lateness/slack/distance.
+        """
         distance = self._distance(shipper.position, (order.ex, order.ey))
         finish_t = t + distance
         reward = delivery_reward(order, finish_t, self._t_limit)
@@ -371,6 +468,14 @@ class MAPDCBSSolver(Solver):
         )
 
     def _large_prefilter_key(self, shipper: Shipper, order: Order, t: int) -> Tuple[float, ...]:
+        """
+        Cheaply shortlist orders in large mode using Manhattan distance.
+
+        Formula:
+          route = manhattan(shipper,pickup) + manhattan(pickup,dropoff)
+          finish_t = t + route
+        Depending on pressure, sort by reward-per-step or absolute reward.
+        """
         pickup = (order.sx, order.sy)
         dropoff = (order.ex, order.ey)
         pickup_distance = self._manhattan(shipper.position, pickup)
@@ -400,11 +505,20 @@ class MAPDCBSSolver(Solver):
         )
 
     def _use_reward_per_step_prefilter(self) -> bool:
+        """Use reward-per-step prefilter on large/high-pressure/surge instances."""
         if self._n < 55 and self._c <= 12 and self._active_pressure < 8.0:
             return False
         return self._n >= 55 or self._active_pressure >= 8.0 or self._surge_score >= 0.55
 
     def _large_pickup_rank(self, shipper: Shipper, order: Order, orders: Dict[int, Order], t: int) -> Tuple[float, ...]:
+        """
+        Rank pickup candidates in large mode with Manhattan estimates.
+
+        Formula:
+          rps = delivery_reward(order, t+pd+dd, T) / max(pd+dd, 1)
+          rps *= 1 + 0.08 * hotspot_bonus
+        Includes insertion penalty for delaying carried deliveries.
+        """
         pickup = (order.sx, order.sy)
         dropoff = (order.ex, order.ey)
         pickup_distance = self._manhattan(shipper.position, pickup)
@@ -437,6 +551,13 @@ class MAPDCBSSolver(Solver):
         )
 
     def _large_pickup_value(self, shipper: Shipper, order: Order, t: int) -> float:
+        """
+        Scalar value for large-mode pickup and sticky comparison.
+
+        Formula:
+          value = rps*(1+0.08*hotspot) + 0.015*reward + 0.12*priority
+                  - 0.015*pickup_distance - 0.020*lateness
+        """
         pickup = (order.sx, order.sy)
         dropoff = (order.ex, order.ey)
         pickup_distance = self._manhattan(shipper.position, pickup)
@@ -455,6 +576,16 @@ class MAPDCBSSolver(Solver):
         )
 
     def _should_use_flow_assignment(self, active_orders_count: int) -> bool:
+        """
+        Decide when global min-cost flow matching is worth using.
+
+        Formula:
+          avg_route_len = 4N/3
+          budget_per_order = T*C/G
+          difficulty = avg_route_len / budget_per_order
+          active_pressure = active_orders/C
+          use_flow = difficulty >= 1.2 or active_pressure >= 5.0
+        """
         c = max(1, self._c)
         g = max(1, self._g)
         t_limit = max(1, self._t_limit)
@@ -467,6 +598,7 @@ class MAPDCBSSolver(Solver):
         return difficulty >= 1.2 or active_pressure >= 5.0
 
     def _add_flow_edge(self, graph: List[List[_FlowEdge]], fr: int, to: int, cap: int, cost: int) -> _FlowEdge:
+        """Add forward and reverse residual edges for min-cost flow."""
         forward = _FlowEdge(to, len(graph[to]), cap, cost)
         backward = _FlowEdge(fr, len(graph[fr]), 0, -cost)
         graph[fr].append(forward)
@@ -474,6 +606,15 @@ class MAPDCBSSolver(Solver):
         return forward
 
     def _min_cost_positive_matching(self, candidates: List[Tuple[int, int, float]]) -> Dict[int, int]:
+        """
+        Solve a positive-value bipartite assignment with min-cost flow.
+
+        Graph:
+          source -> shipper -> order -> sink
+        Each shipper/order has capacity 1. Edge cost is -1000*value, so a
+        shortest augmenting path with negative total cost increases total value.
+        Augmentation stops when no negative-cost path remains.
+        """
         shipper_ids = sorted({sid for sid, _, value in candidates if value > 0.0})
         order_ids = sorted({oid for _, oid, value in candidates if value > 0.0})
         if not shipper_ids or not order_ids:
@@ -552,6 +693,14 @@ class MAPDCBSSolver(Solver):
         return assignments
 
     def _pickup_flow_value(self, shipper: Shipper, order: Order, orders: Dict[int, Order], t: int) -> float:
+        """
+        Edge value for flow assignment between one shipper and one order.
+
+        Formula:
+          value = 10*rps*hotspot_factor + 0.03*reward + 0.50*priority
+                  - 0.08*pickup_distance - 0.04*delivery_distance
+                  - 0.20*lateness - insertion_penalty - 0.60*region_penalty
+        """
         pickup = (order.sx, order.sy)
         dropoff = (order.ex, order.ey)
         pickup_distance = self._distance(shipper.position, pickup)
@@ -593,6 +742,7 @@ class MAPDCBSSolver(Solver):
         orders: Dict[int, Order],
         candidates: List[Tuple[int, int, float]],
     ) -> Dict[int, Target]:
+        """Convert min-cost-flow assignments into pickup Targets without replacing deliveries."""
         assignments = self._min_cost_positive_matching(candidates)
         for shipper_id, order_id in assignments.items():
             if shipper_id in targets:
@@ -610,6 +760,13 @@ class MAPDCBSSolver(Solver):
         orders: Dict[int, Order],
         t: int,
     ) -> Dict[int, Target]:
+        """
+        Keep a previous pickup target unless a new one is clearly better.
+
+        Formula:
+          keep old target if current_value <= max(old_value, sticky_value) * 1.25
+        Sticky expires after 8 timesteps or when the order is no longer valid.
+        """
         max_age = 8
         keep_margin = 1.25
         used_orders = {
@@ -670,6 +827,14 @@ class MAPDCBSSolver(Solver):
         return targets
 
     def _assign_targets_large(self, obs: dict) -> Dict[int, Target]:
+        """
+        Assign deliver/pickup targets in large mode.
+
+        Delivery targets are fixed first for carried orders. Pickup candidates
+        are shortlisted, then either greedily selected or globally matched with
+        min-cost flow when _should_use_flow_assignment is true. Sticky pickup is
+        applied last to reduce target switching.
+        """
         orders: Dict[int, Order] = obs["orders"]
         shippers: List[Shipper] = obs["shippers"]
         t = int(obs.get("t", 0))
@@ -760,6 +925,12 @@ class MAPDCBSSolver(Solver):
         return self._apply_sticky_pickups(targets, shippers, orders, t)
 
     def _assign_targets(self, obs: dict) -> Dict[int, Target]:
+        """
+        Assign targets in small/medium mode.
+
+        Uses delivery-first assignment, then adaptive flow if the instance is
+        difficult, otherwise greedy pickup assignment with beam lookahead.
+        """
         orders: Dict[int, Order] = obs["orders"]
         shippers: List[Shipper] = obs["shippers"]
         t = int(obs.get("t", 0))
@@ -818,6 +989,7 @@ class MAPDCBSSolver(Solver):
         constraints: Iterable[Constraint],
         shipper_id: int,
     ) -> Tuple[DefaultDict[int, set[Position]], DefaultDict[int, set[Tuple[Position, Position]]]]:
+        """Split CBS constraints into vertex[time] and edge[time] lookup tables."""
         vertex: DefaultDict[int, set[Position]] = defaultdict(set)
         edge: DefaultDict[int, set[Tuple[Position, Position]]] = defaultdict(set)
         for constraint in constraints:
@@ -837,6 +1009,7 @@ class MAPDCBSSolver(Solver):
         vertex_constraints: DefaultDict[int, set[Position]],
         edge_constraints: DefaultDict[int, set[Tuple[Position, Position]]],
     ) -> bool:
+        """Return True if pos->nxt violates a vertex or edge constraint."""
         return nxt in vertex_constraints[depart_t + 1] or (pos, nxt) in edge_constraints[depart_t]
 
     def _low_level_search(
@@ -846,6 +1019,16 @@ class MAPDCBSSolver(Solver):
         constraints: Tuple[Constraint, ...],
         max_time: int,
     ) -> Optional[List[Position]]:
+        """
+        Constrained A* for one shipper inside CBS.
+
+        State is (position, time). Cost:
+          g = path length so far
+          h = cached shortest-path distance to target
+          f = g + h
+        The search rejects moves violating CBS constraints or unable to reach
+        target before max_time.
+        """
         start = shipper.position
         vertex_constraints, edge_constraints = self._constraint_maps(constraints, shipper.id)
         if start in vertex_constraints[0]:
@@ -883,12 +1066,19 @@ class MAPDCBSSolver(Solver):
         return None
 
     def _path_pos(self, path: List[Position], t: int) -> Position:
+        """Return path[t], or the final cell if the path has already arrived."""
         return path[t] if t < len(path) else path[-1]
 
     def _first_conflict(
         self,
         paths: Dict[int, List[Position]],
     ) -> Optional[Tuple[str, int, int, Position, Optional[Position], int]]:
+        """
+        Find the first CBS conflict among paths.
+
+        Vertex conflict: two shippers occupy the same cell at t.
+        Edge conflict: two shippers swap cells between t and t+1.
+        """
         if len(paths) < 2:
             return None
         max_len = max(len(path) for path in paths.values())
@@ -920,6 +1110,7 @@ class MAPDCBSSolver(Solver):
         constraints: Tuple[Constraint, ...],
         paths: Dict[int, List[Position]],
     ) -> None:
+        """Push a CBS node ordered by sum-of-costs, conflict flag, then FIFO counter."""
         self._counter += 1
         cost = sum(len(path) - 1 for path in paths.values())
         conflicts_left = 1 if self._first_conflict(paths) else 0
@@ -930,6 +1121,13 @@ class MAPDCBSSolver(Solver):
         shippers: List[Shipper],
         targets: Dict[int, Target],
     ) -> Optional[Dict[int, List[Position]]]:
+        """
+        High-level Conflict-Based Search for small/medium mode.
+
+        Root node plans all target paths with unconstrained A*. When a conflict
+        appears, branch by adding one constraint to one conflicting shipper and
+        replan only that shipper. The expansion budget is _max_cbs_nodes.
+        """
         active = [shipper for shipper in shippers if shipper.id in targets]
         idle = [shipper for shipper in shippers if shipper.id not in targets]
         if not active:
@@ -996,6 +1194,7 @@ class MAPDCBSSolver(Solver):
         target: Target,
         path: Optional[List[Position]],
     ) -> Action:
+        """Convert a planned path to one env action; pickup/deliver only on target arrival."""
         nxt = path[1] if path is not None and len(path) >= 2 else shipper.position
         move = self._move_between(shipper.position, nxt)
         arrival = valid_next_pos(shipper.position, move, self.grid)
@@ -1008,6 +1207,7 @@ class MAPDCBSSolver(Solver):
         return move, 0
 
     def _fallback_actions(self, obs: dict, targets: Dict[int, Target]) -> Dict[int, Action]:
+        """Greedy one-step fallback when CBS cannot find a conflict-free plan."""
         actions: Dict[int, Action] = {}
         reserved: set[Position] = set()
         shippers: List[Shipper] = obs["shippers"]
@@ -1041,6 +1241,12 @@ class MAPDCBSSolver(Solver):
         target: Target,
         reserved: set[Position],
     ) -> Tuple[Action, Position]:
+        """
+        Fast large-mode movement toward target.
+
+        Uses cached shortest-path first move, then locally reroutes if the next
+        cell is already reserved by a higher-priority shipper.
+        """
         move = self._next_move(shipper.position, target.pos)
         nxt = valid_next_pos(shipper.position, move, self.grid)
 
@@ -1066,6 +1272,13 @@ class MAPDCBSSolver(Solver):
         return (move, op), nxt
 
     def _decide_actions_large(self, obs: dict) -> Dict[int, Action]:
+        """
+        Decide all actions in large mode without CBS.
+
+        Shippers are ordered by task urgency: deliveries first, then pickups,
+        both sorted by deadline/priority. A reserved-cell set avoids simple
+        same-cell conflicts cheaply.
+        """
         targets = self._assign_targets_large(obs)
         orders: Dict[int, Order] = obs["orders"]
         shippers: List[Shipper] = obs["shippers"]
@@ -1100,6 +1313,12 @@ class MAPDCBSSolver(Solver):
         return actions
 
     def _decide_actions(self, obs: dict) -> Dict[int, Action]:
+        """
+        Main per-timestep policy.
+
+        Refresh observation-derived state, update hotspot/surge inference, then
+        choose the large fast planner or small/medium CBS planner.
+        """
         self._refresh_from_obs(obs)
         self._hotspot_tracker.update(obs)
         self._update_surge_score(obs)
@@ -1125,6 +1344,7 @@ class MAPDCBSSolver(Solver):
     # Main loop
     # ------------------------------------------------------------------
     def run(self) -> dict:
+        """Run online rolling-horizon planning until env.done and return final result."""
         start_time = time.time()
         obs = self.env.reset()
         self._hotspot_tracker.reset()
