@@ -34,6 +34,14 @@ class Constraint(NamedTuple):
     to_pos: Optional[Position] = None
 
 
+class _FlowEdge:
+    def __init__(self, to: int, rev: int, cap: int, cost: int) -> None:
+        self.to = to
+        self.rev = rev
+        self.cap = cap
+        self.cost = cost
+
+
 class MAPDCBSSolver(Solver):
     """
     Rolling-horizon MAPD-CBS.
@@ -446,6 +454,155 @@ class MAPDCBSSolver(Solver):
             - 0.020 * lateness
         )
 
+    def _should_use_flow_assignment(self, active_orders_count: int) -> bool:
+        c = max(1, self._c)
+        g = max(1, self._g)
+        t_limit = max(1, self._t_limit)
+
+        avg_route_len = 4.0 * self._n / 3.0
+        budget_per_order = t_limit * c / g
+        difficulty = avg_route_len / max(1.0, budget_per_order)
+        active_pressure = active_orders_count / c
+
+        return difficulty >= 1.2 or active_pressure >= 5.0
+
+    def _add_flow_edge(self, graph: List[List[_FlowEdge]], fr: int, to: int, cap: int, cost: int) -> _FlowEdge:
+        forward = _FlowEdge(to, len(graph[to]), cap, cost)
+        backward = _FlowEdge(fr, len(graph[fr]), 0, -cost)
+        graph[fr].append(forward)
+        graph[to].append(backward)
+        return forward
+
+    def _min_cost_positive_matching(self, candidates: List[Tuple[int, int, float]]) -> Dict[int, int]:
+        shipper_ids = sorted({sid for sid, _, value in candidates if value > 0.0})
+        order_ids = sorted({oid for _, oid, value in candidates if value > 0.0})
+        if not shipper_ids or not order_ids:
+            return {}
+
+        shipper_index = {sid: idx for idx, sid in enumerate(shipper_ids)}
+        order_index = {oid: idx for idx, oid in enumerate(order_ids)}
+
+        source = 0
+        shipper_offset = 1
+        order_offset = shipper_offset + len(shipper_ids)
+        sink = order_offset + len(order_ids)
+        graph: List[List[_FlowEdge]] = [[] for _ in range(sink + 1)]
+
+        for sid in shipper_ids:
+            self._add_flow_edge(graph, source, shipper_offset + shipper_index[sid], 1, 0)
+        for oid in order_ids:
+            self._add_flow_edge(graph, order_offset + order_index[oid], sink, 1, 0)
+
+        edge_meta: List[Tuple[_FlowEdge, int, int]] = []
+        best_edge: Dict[Tuple[int, int], float] = {}
+        for sid, oid, value in candidates:
+            if value <= 0.0:
+                continue
+            key = (sid, oid)
+            if value > best_edge.get(key, -1.0):
+                best_edge[key] = value
+
+        for (sid, oid), value in best_edge.items():
+            fr = shipper_offset + shipper_index[sid]
+            to = order_offset + order_index[oid]
+            edge = self._add_flow_edge(graph, fr, to, 1, int(round(-1000.0 * value)))
+            edge_meta.append((edge, sid, oid))
+
+        max_flow = min(len(shipper_ids), len(order_ids))
+        for _ in range(max_flow):
+            dist = [10**18] * len(graph)
+            in_queue = [False] * len(graph)
+            prev_node = [-1] * len(graph)
+            prev_edge = [-1] * len(graph)
+            dist[source] = 0
+            queue: deque[int] = deque([source])
+            in_queue[source] = True
+
+            while queue:
+                node = queue.popleft()
+                in_queue[node] = False
+                for edge_idx, edge in enumerate(graph[node]):
+                    if edge.cap <= 0:
+                        continue
+                    new_dist = dist[node] + edge.cost
+                    if new_dist >= dist[edge.to]:
+                        continue
+                    dist[edge.to] = new_dist
+                    prev_node[edge.to] = node
+                    prev_edge[edge.to] = edge_idx
+                    if not in_queue[edge.to]:
+                        queue.append(edge.to)
+                        in_queue[edge.to] = True
+
+            if prev_node[sink] == -1 or dist[sink] >= 0:
+                break
+
+            node = sink
+            while node != source:
+                parent = prev_node[node]
+                edge = graph[parent][prev_edge[node]]
+                edge.cap -= 1
+                graph[node][edge.rev].cap += 1
+                node = parent
+
+        assignments: Dict[int, int] = {}
+        for edge, sid, oid in edge_meta:
+            if edge.cap == 0:
+                assignments[sid] = oid
+        return assignments
+
+    def _pickup_flow_value(self, shipper: Shipper, order: Order, orders: Dict[int, Order], t: int) -> float:
+        pickup = (order.sx, order.sy)
+        dropoff = (order.ex, order.ey)
+        pickup_distance = self._distance(shipper.position, pickup)
+        delivery_distance = self._distance(pickup, dropoff)
+        if pickup_distance >= INF or delivery_distance >= INF:
+            return -1.0
+
+        route_distance = pickup_distance + delivery_distance
+        finish_t = t + route_distance
+        reward = delivery_reward(order, finish_t, self._t_limit)
+        if reward <= 0.0:
+            return -1.0
+
+        carried = self._carried_orders(shipper, orders)
+        insertion_penalty = 0.0
+        if carried:
+            best_delivery = min(carried, key=lambda o: self._delivery_rank(shipper, o, t))
+            direct = self._distance(shipper.position, (best_delivery.ex, best_delivery.ey))
+            via_pickup = pickup_distance + self._distance(pickup, (best_delivery.ex, best_delivery.ey))
+            insertion_penalty = max(0.0, float(via_pickup - direct))
+
+        lateness = max(0, finish_t - order.et)
+        reward_per_step = reward / max(route_distance, 1)
+        hotspot_factor = 1.0 + 0.10 * self._hotspot_bonus(order)
+        return (
+            10.0 * reward_per_step * hotspot_factor
+            + 0.03 * reward
+            + 0.50 * order.p
+            - 0.08 * pickup_distance
+            - 0.04 * delivery_distance
+            - 0.20 * lateness
+            - 1.00 * insertion_penalty
+            - 0.60 * self._region_penalty(shipper, order)
+        )
+
+    def _apply_flow_pickups(
+        self,
+        targets: Dict[int, Target],
+        orders: Dict[int, Order],
+        candidates: List[Tuple[int, int, float]],
+    ) -> Dict[int, Target]:
+        assignments = self._min_cost_positive_matching(candidates)
+        for shipper_id, order_id in assignments.items():
+            if shipper_id in targets:
+                continue
+            order = orders.get(order_id)
+            if order is None or order.picked or order.delivered:
+                continue
+            targets[shipper_id] = Target("pickup", order.id, (order.sx, order.sy))
+        return targets
+
     def _apply_sticky_pickups(
         self,
         targets: Dict[int, Target],
@@ -529,6 +686,7 @@ class MAPDCBSSolver(Solver):
         self._active_pressure = len(active_orders) / max(1, self._c)
         if not active_orders:
             return targets
+        use_flow = self._should_use_flow_assignment(len(active_orders))
 
         candidate_limit = max(18, min(70, 3 * max(1, self._c)))
         exact_limit = max(3, min(5, self._c // 2))
@@ -572,16 +730,32 @@ class MAPDCBSSolver(Solver):
                     continue
                 if exact_limit == 0 and rank[0] and rank[4]:
                     continue
-                pickup_pairs.append((rank, shipper.id, order))
+                if use_flow:
+                    value = (
+                        self._pickup_flow_value(shipper, order, orders, t)
+                        if exact_limit > 0
+                        else self._large_pickup_value(shipper, order, t)
+                    )
+                    if value > 0.0:
+                        pickup_pairs.append(((0.0, -value), shipper.id, order))
+                else:
+                    pickup_pairs.append((rank, shipper.id, order))
 
-        used_shippers = set(targets)
-        used_orders: set[int] = set()
-        for _, shipper_id, order in sorted(pickup_pairs):
-            if shipper_id in used_shippers or order.id in used_orders:
-                continue
-            targets[shipper_id] = Target("pickup", order.id, (order.sx, order.sy))
-            used_shippers.add(shipper_id)
-            used_orders.add(order.id)
+        if use_flow:
+            flow_candidates = [
+                (shipper_id, order.id, -rank[1])
+                for rank, shipper_id, order in pickup_pairs
+            ]
+            targets = self._apply_flow_pickups(targets, orders, flow_candidates)
+        else:
+            used_shippers = set(targets)
+            used_orders: set[int] = set()
+            for _, shipper_id, order in sorted(pickup_pairs):
+                if shipper_id in used_shippers or order.id in used_orders:
+                    continue
+                targets[shipper_id] = Target("pickup", order.id, (order.sx, order.sy))
+                used_shippers.add(shipper_id)
+                used_orders.add(order.id)
 
         return self._apply_sticky_pickups(targets, shippers, orders, t)
 
@@ -598,13 +772,27 @@ class MAPDCBSSolver(Solver):
             order = min(carried, key=lambda o: self._delivery_rank(shipper, o, t))
             targets[shipper.id] = Target("deliver", order.id, (order.ex, order.ey))
 
+        active_orders = [order for order in orders.values() if not order.picked and not order.delivered]
+        if self._should_use_flow_assignment(len(active_orders)):
+            flow_candidates: List[Tuple[int, int, float]] = []
+            for shipper in shippers:
+                if shipper.id in targets:
+                    continue
+                if len(shipper.bag) >= max(1, shipper.K_max):
+                    continue
+                for order in active_orders:
+                    if not self._can_pickup(shipper, order, orders):
+                        continue
+                    value = self._pickup_flow_value(shipper, order, orders, t)
+                    if value > 0.0:
+                        flow_candidates.append((shipper.id, order.id, value))
+            return self._apply_flow_pickups(targets, orders, flow_candidates)
+
         pickup_pairs: List[Tuple[Tuple[float, ...], int, Order]] = []
         for shipper in shippers:
             if shipper.id in targets and len(shipper.bag) >= max(1, shipper.K_max):
                 continue
-            for order in orders.values():
-                if order.picked or order.delivered:
-                    continue
+            for order in active_orders:
                 if not self._can_pickup(shipper, order, orders):
                     continue
                 if self._expected_pickup_reward(shipper, order, t) <= 0.0:
