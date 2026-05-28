@@ -21,6 +21,7 @@ class ACOSolver(Solver):
 
     def __init__(self, env: DeliveryEnv):
         super().__init__(env)
+        self.cfg = {"N": env.N, "C": env.C, "G": env.G, "T": env.T, "name": env.config_name}
 
         self._path_cache: Dict[Tuple[Position, Position], Tuple[int, Move]] = {}
         self._pheromone: Dict[Tuple[str, int], float] = {}

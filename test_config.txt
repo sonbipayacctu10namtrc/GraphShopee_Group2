@@ -1,12 +1,12 @@
 # =============================================================
-# test_config.txt — Phase 1 (Công bố cho sinh viên)
+# test_config.txt â€” Phase 1 (CÃ´ng bá»‘ cho sinh viÃªn)
 # Multi-Agent Package Delivery (MAPD)
 #
 # Phase 1:
-#   - 6 config dễ/vừa
+#   - 6 config dá»…/vá»«a
 #   - N <= 20
-#   - Có obstacle nhỏ và một vài bottleneck kiểu ngã tư/cổng hẹp
-#   - Surge/hotspot không công bố trong Phase 1
+#   - CÃ³ obstacle nhá» vÃ  má»™t vÃ i bottleneck kiá»ƒu ngÃ£ tÆ°/cá»•ng háº¹p
+#   - Surge/hotspot khÃ´ng cÃ´ng bá»‘ trong Phase 1
 # =============================================================
 
 [SEED]

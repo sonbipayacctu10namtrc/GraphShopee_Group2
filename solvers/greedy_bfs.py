@@ -33,6 +33,7 @@ class GreedyBFS(Solver):
 
     def __init__(self, env: DeliveryEnv):
         super().__init__(env)
+        self.cfg = {"N": env.N, "C": env.C, "G": env.G, "T": env.T, "name": env.config_name}
         self._distance_cache: Dict[Tuple[Position, Position], int] = {}
         self._next_move_cache: Dict[Tuple[Position, Position], Move] = {}
 
