@@ -604,3 +604,74 @@ Origin/main tren cung test_config sau merge: 5713.45
 ### Ghi chu
 - Diem da ve lai muc main tren public config hien tai.
 - Solver chinh van khong doc config file va khong doc thong tin an trong env.
+
+## 2026-05-27 - Source-distance cache for constraint-scale maps
+
+### Thay doi giu lai
+- File: `solvers/mapd_cbs_solver_exp.py`
+  - Them `_distance_map_cache`: cache khoang cach BFS theo diem xuat phat.
+  - `_distance(start, goal)` khong con goi BFS/path rieng cho tung cap diem nua.
+  - Khi can khoang cach tu mot `start`, solver BFS mot lan va luu distance den moi o reachable.
+  - Cac quyet dinh target/CBS/large-mode khong doi, chi doi cach tinh khoang cach nhanh hon.
+- File: `solvers/solver.py`
+  - Base solver khong con gan `self.grid = env.grid`.
+  - Solver con lay grid tu observation hop le.
+
+### Ly do
+Voi constraints Phase 2 `N <= 100, C <= 25, G <= 1500, T <= 2400`, solver goi `_distance()` rat nhieu lan de rank order, CBS heuristic va fallback. Cache theo cap `(start, goal)` van lap BFS qua nhieu khi cung mot `start` can so voi nhieu dich. Cache theo `start` giu nguyen ket qua khoang cach nhung giam lap lai.
+
+### Ket qua
+
+Public `test_config.txt`:
+
+```text
+MAPD-CBS: 5713.45
+Tong thoi gian: 7.9s
+```
+
+Phase 2 stress 8 config:
+
+```text
+MAPD-CBS: 33400.53
+Tong thoi gian truoc cache: 1443.3s
+Tong thoi gian sau cache: 874.1s
+```
+
+Chi tiet stress sau cache:
+
+```text
+P2S1: 2729.50  t=6.6s
+P2S2: 3544.00  t=38.1s
+P2S3: 4494.56  t=111.5s
+P2S4: 4678.06  t=49.8s
+P2S5: 4285.12  t=80.5s
+P2S6: 5355.48  t=132.2s
+P2S7: 3785.82  t=201.4s
+P2S8: 4527.99  t=253.9s
+```
+
+### Kiem tra
+
+```powershell
+python -B -m py_compile env.py run_test.py solvers\solver.py solvers\mapd_cbs_solver.py solvers\mapd_cbs_solver_exp.py solvers\hotspot_tracker.py
+$env:PYTHONDONTWRITEBYTECODE='1'; $env:PYTHONIOENCODING='utf-8'; python -B run_test.py --config test_config.txt --out results_distance_cache_public --method MAPDCBSSolver
+$env:PYTHONDONTWRITEBYTECODE='1'; $env:PYTHONIOENCODING='utf-8'; python -B run_test.py --config phase2_stress_config.txt --out results_distance_cache_phase2_stress --method MAPDCBSSolver
+```
+
+Grep compliance:
+
+```powershell
+rg "env\\.cfg|public_cfg|env\\.grid|env\\.N|env\\.C|env\\.G|env\\.T|load_config|open\\(" solvers\mapd_cbs_solver.py solvers\mapd_cbs_solver_exp.py solvers\solver.py
+```
+
+Khong co ket qua.
+
+### Y tuong da thu nhung khong giu
+- Bat large-mode som hon cho map trung binh-lon:
+  - Chay nhanh hon (`1095.2s`) nhung diem stress giam `33400.53 -> 31870.76`.
+- Giam CBS planning window cho `N >= 35, C >= 8`:
+  - Lam diem stress giam `33400.53 -> 32261.61` va thoi gian tang, nen revert.
+
+### Ghi chu
+- Cai tien nay khong dua vao file config, surge/hotspot hidden hay env internals.
+- Chi dung observation hien tai va cau truc map visible.

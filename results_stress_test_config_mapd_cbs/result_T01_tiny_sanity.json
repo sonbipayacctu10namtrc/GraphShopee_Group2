@@ -1,0 +1,29 @@
+{
+  "config_name": "T01_tiny_sanity",
+  "orders_total_fixed": 30,
+  "online_generation": true,
+  "results": [
+    {
+      "method": "MAPD-CBS",
+      "config_name": "T01_tiny_sanity",
+      "total_orders": 30,
+      "orders_generated": 30,
+      "delivered": 27,
+      "on_time": 27,
+      "late": 0,
+      "missed": 3,
+      "delivery_rate": 90.0,
+      "on_time_rate": 100.0,
+      "total_reward": 693.3413,
+      "total_movecost": -2.7578,
+      "net_reward": 690.5836,
+      "elapsed_sec": 0.0643,
+      "shipper_rewards": [
+        304.4085,
+        386.1751
+      ],
+      "status": "OK",
+      "wall_sec": 0.07
+    }
+  ]
+}

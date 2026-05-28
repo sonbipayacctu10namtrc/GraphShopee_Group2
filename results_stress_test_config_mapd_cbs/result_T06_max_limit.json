@@ -1,0 +1,52 @@
+{
+  "config_name": "T06_max_limit",
+  "orders_total_fixed": 1500,
+  "online_generation": true,
+  "results": [
+    {
+      "method": "MAPD-CBS",
+      "config_name": "T06_max_limit",
+      "total_orders": 1500,
+      "orders_generated": 1500,
+      "delivered": 333,
+      "on_time": 207,
+      "late": 126,
+      "missed": 1167,
+      "delivery_rate": 22.2,
+      "on_time_rate": 62.16216216216216,
+      "total_reward": 4691.0571,
+      "total_movecost": -448.5029,
+      "net_reward": 4242.5542,
+      "elapsed_sec": 478.8211,
+      "shipper_rewards": [
+        218.4458,
+        85.8841,
+        356.062,
+        86.59,
+        354.2116,
+        73.3112,
+        65.4739,
+        381.5051,
+        16.5933,
+        341.6812,
+        175.976,
+        151.4698,
+        80.4576,
+        40.3232,
+        140.2686,
+        319.6728,
+        39.565,
+        304.3575,
+        114.0743,
+        450.9224,
+        2.8093,
+        128.6646,
+        60.0574,
+        106.8056,
+        147.3718
+      ],
+      "status": "OK",
+      "wall_sec": 483.24
+    }
+  ]
+}

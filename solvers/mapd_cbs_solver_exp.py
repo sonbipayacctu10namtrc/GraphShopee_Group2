@@ -49,6 +49,7 @@ class MAPDCBSSolver(Solver):
     def __init__(self, env: DeliveryEnv):
         super().__init__(env)
         self._distance_cache: Dict[Tuple[Position, Position], int] = {}
+        self._distance_map_cache: Dict[Position, Dict[Position, int]] = {}
         self._next_move_cache: Dict[Tuple[Position, Position], Move] = {}
         self._path_cache: Dict[Tuple[Position, Position], Optional[List[Position]]] = {}
         self._counter = 0
@@ -66,6 +67,7 @@ class MAPDCBSSolver(Solver):
         if self.grid is not grid:
             self.grid = grid
             self._distance_cache.clear()
+            self._distance_map_cache.clear()
             self._next_move_cache.clear()
             self._path_cache.clear()
 
@@ -74,10 +76,7 @@ class MAPDCBSSolver(Solver):
         self._g = int(obs.get("G", len(obs.get("orders", {}))))
         self._t_limit = int(obs.get("T", max(1, obs.get("t", 0) + 1)))
         self._large_mode = self._c >= 12 or self._g >= 500
-        if not self._large_mode and self._n >= 35 and self._c >= 8:
-            self._planning_window = 26
-        else:
-            self._planning_window = max(12, min(34, self._n + 8))
+        self._planning_window = max(12, min(34, self._n + 8))
 
     # ------------------------------------------------------------------
     # Grid utilities
@@ -125,14 +124,33 @@ class MAPDCBSSolver(Solver):
         self._path_cache[key] = path
         return path
 
+    def _distance_map_from(self, start: Position) -> Dict[Position, int]:
+        cached = self._distance_map_cache.get(start)
+        if cached is not None:
+            return cached
+
+        if not is_valid_cell(start, self.grid):
+            self._distance_map_cache[start] = {}
+            return {}
+
+        distances: Dict[Position, int] = {start: 0}
+        queue: deque[Position] = deque([start])
+
+        while queue:
+            current = queue.popleft()
+            for _, nxt in self._neighbors(current):
+                if nxt in distances:
+                    continue
+                distances[nxt] = distances[current] + 1
+                queue.append(nxt)
+
+        self._distance_map_cache[start] = distances
+        return distances
+
     def _distance(self, start: Position, goal: Position) -> int:
         if start == goal:
             return 0
-        key = (start, goal)
-        if key not in self._distance_cache:
-            path = self._bfs_path(start, goal)
-            self._distance_cache[key] = INF if path is None else len(path) - 1
-        return self._distance_cache[key]
+        return self._distance_map_from(start).get(goal, INF)
 
     def _manhattan(self, start: Position, goal: Position) -> int:
         return abs(start[0] - goal[0]) + abs(start[1] - goal[1])

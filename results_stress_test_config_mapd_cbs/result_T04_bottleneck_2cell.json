@@ -1,0 +1,39 @@
+{
+  "config_name": "T04_bottleneck_2cell",
+  "orders_total_fixed": 700,
+  "online_generation": true,
+  "results": [
+    {
+      "method": "MAPD-CBS",
+      "config_name": "T04_bottleneck_2cell",
+      "total_orders": 700,
+      "orders_generated": 700,
+      "delivered": 220,
+      "on_time": 170,
+      "late": 50,
+      "missed": 480,
+      "delivery_rate": 31.428571428571427,
+      "on_time_rate": 77.27272727272727,
+      "total_reward": 3905.5519,
+      "total_movecost": -148.8411,
+      "net_reward": 3756.7107,
+      "elapsed_sec": 62.4526,
+      "shipper_rewards": [
+        407.5671,
+        744.8416,
+        241.0676,
+        243.1696,
+        236.259,
+        163.3165,
+        356.9545,
+        430.2847,
+        210.1241,
+        157.3265,
+        338.9243,
+        226.8751
+      ],
+      "status": "OK",
+      "wall_sec": 62.7
+    }
+  ]
+}

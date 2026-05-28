@@ -1,0 +1,35 @@
+{
+  "config_name": "T03_dense_obstacles",
+  "orders_total_fixed": 350,
+  "online_generation": true,
+  "results": [
+    {
+      "method": "MAPD-CBS",
+      "config_name": "T03_dense_obstacles",
+      "total_orders": 350,
+      "orders_generated": 350,
+      "delivered": 220,
+      "on_time": 169,
+      "late": 51,
+      "missed": 130,
+      "delivery_rate": 62.857142857142854,
+      "on_time_rate": 76.81818181818181,
+      "total_reward": 3581.4384,
+      "total_movecost": -105.285,
+      "net_reward": 3476.1534,
+      "elapsed_sec": 40.0341,
+      "shipper_rewards": [
+        507.1702,
+        473.6272,
+        319.9217,
+        513.1076,
+        499.9483,
+        383.4013,
+        418.4199,
+        360.5572
+      ],
+      "status": "OK",
+      "wall_sec": 40.07
+    }
+  ]
+}
