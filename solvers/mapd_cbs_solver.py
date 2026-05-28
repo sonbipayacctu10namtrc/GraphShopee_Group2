@@ -64,7 +64,6 @@ class MAPDCBSSolver(Solver):
     def __init__(self, env: DeliveryEnv):
         """Initialize caches, online hotspot/surge state, and adaptive mode flags."""
         super().__init__(env)
-        self.cfg = {"N": env.N, "C": env.C, "G": env.G, "T": env.T, "name": env.config_name}
         self._distance_cache: Dict[Tuple[Position, Position], int] = {}
         self._next_move_cache: Dict[Tuple[Position, Position], Move] = {}
         self._path_cache: Dict[Tuple[Position, Position], Optional[List[Position]]] = {}
@@ -81,6 +80,7 @@ class MAPDCBSSolver(Solver):
         self._surge_score = 0.0
         self._active_pressure = 0.0
         self._sticky_pickups: Dict[int, Tuple[int, int, float]] = {}
+        self._current_obs: Optional[dict] = None
 
     def _refresh_from_obs(self, obs: dict) -> None:
         """
@@ -229,16 +229,67 @@ class MAPDCBSSolver(Solver):
         """
         Estimate pickup hotspot value from public revealed orders.
 
-        Formula:
-          bonus = hotspot_score(pickup) * (1 + 0.20 * surge_score)
-        The bonus is disabled on tiny maps or low-shipper large maps where it
-        caused unstable over-biasing.
+        HotspotTracker only detects recent pickup clusters. This solver decides
+        how strongly to use that signal. Small/Phase1-like instances keep the
+        raw hotspot score. Large/difficult instances use demand-supply balance:
+
+          confidence = min(1, demand / 5)
+          balance = demand / (demand + supply + 1)
+          balanced_bonus = raw_bonus * confidence * balance
+
+        This increases underserved hotspots and dampens hotspots that already
+        have many nearby shippers.
         """
+        raw = self._raw_hotspot_bonus(order)
+        if raw <= 0.0 or not self._use_balanced_hotspot() or self._current_obs is None:
+            return raw
+        return self._balanced_hotspot_bonus(order, raw)
+
+    def _raw_hotspot_bonus(self, order: Order) -> float:
+        """Original hotspot score: hotspot density multiplied by surge estimate."""
         n = self._n
         c = self._c
         if n < 18 or (n >= 30 and c <= 3):
             return 0.0
         return self._hotspot_tracker.score((order.sx, order.sy)) * (1.0 + 0.20 * self._surge_score)
+
+    def _use_balanced_hotspot(self) -> bool:
+        """Enable demand/supply balancing only where it improved large stress cases."""
+        return self._n >= 40 or self._g >= 350 or self._c >= 8
+
+    def _hotspot_balance_radius(self) -> int:
+        """Neighborhood radius for local hotspot demand/supply measurements."""
+        return max(3, min(7, self._n // 18))
+
+    def _near(self, a: Position, b: Position, radius: int) -> bool:
+        """Return True if two cells are within a Manhattan radius."""
+        return abs(a[0] - b[0]) + abs(a[1] - b[1]) <= radius
+
+    def _balanced_hotspot_bonus(self, order: Order, raw: float) -> float:
+        """
+        Scale raw hotspot by local active-order demand and shipper supply.
+
+        demand = unpicked active orders near this pickup.
+        supply = shippers already near this pickup.
+        """
+        assert self._current_obs is not None
+        radius = self._hotspot_balance_radius()
+        center = (order.sx, order.sy)
+        orders: Dict[int, Order] = self._current_obs.get("orders", {})
+        shippers: List[Shipper] = self._current_obs.get("shippers", [])
+
+        demand = sum(
+            1
+            for other in orders.values()
+            if not other.picked
+            and not other.delivered
+            and self._near(center, (other.sx, other.sy), radius)
+        )
+        supply = sum(1 for shipper in shippers if self._near(center, shipper.position, radius + 2))
+
+        confidence = min(1.0, demand / 5.0)
+        balance = demand / max(1.0, demand + supply + 1.0)
+        return raw * confidence * balance
 
     def _update_surge_score(self, obs: dict) -> None:
         """
@@ -1335,6 +1386,7 @@ class MAPDCBSSolver(Solver):
         Refresh observation-derived state, update hotspot/surge inference, then
         choose the large fast planner or small/medium CBS planner.
         """
+        self._current_obs = obs
         self._refresh_from_obs(obs)
         self._hotspot_tracker.update(obs)
         self._update_surge_score(obs)
@@ -1369,6 +1421,7 @@ class MAPDCBSSolver(Solver):
         self._surge_score = 0.0
         self._active_pressure = 0.0
         self._sticky_pickups.clear()
+        self._current_obs = obs
 
         while not obs.get("done", False):
             actions = self._decide_actions(obs)
