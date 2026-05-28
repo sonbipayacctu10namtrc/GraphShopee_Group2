@@ -584,18 +584,33 @@ class MAPDCBSSolver(Solver):
           budget_per_order = T*C/G
           difficulty = avg_route_len / budget_per_order
           active_pressure = active_orders/C
-          use_flow = difficulty >= 1.2 or active_pressure >= 5.0
+
+        Flow is intentionally conservative. It improves max/bottleneck cases,
+        but on medium-large maps with many shippers it can over-coordinate and
+        reduce delivered orders. The rule therefore keeps greedy assignment for
+        those cases and enables flow only for very hard/max, bottleneck-like, or
+        severe-queue situations.
         """
         c = max(1, self._c)
         g = max(1, self._g)
         t_limit = max(1, self._t_limit)
 
+        total_cells = max(1, self._n * self._n)
+        blocked = sum(cell == 1 for row in self.grid for cell in row)
+        obstacle_ratio = blocked / total_cells
+
         avg_route_len = 4.0 * self._n / 3.0
         budget_per_order = t_limit * c / g
         difficulty = avg_route_len / max(1.0, budget_per_order)
         active_pressure = active_orders_count / c
+        free_per_shipper = (total_cells - blocked) / c
 
-        return difficulty >= 1.2 or active_pressure >= 5.0
+        very_hard = difficulty >= 3.0
+        bottleneck_like = difficulty >= 2.0 and c <= 12
+        sparse_large = difficulty >= 2.6 and free_per_shipper >= 450 and obstacle_ratio <= 0.08
+        severe_queue = active_pressure >= 8.0 and (very_hard or c <= 12)
+
+        return very_hard or bottleneck_like or sparse_large or severe_queue
 
     def _add_flow_edge(self, graph: List[List[_FlowEdge]], fr: int, to: int, cap: int, cost: int) -> _FlowEdge:
         """Add forward and reverse residual edges for min-cost flow."""
