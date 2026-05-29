@@ -36,17 +36,20 @@ class ACOSolver(Solver):
         self._path_cache_limit = 50_000 if self._N >= 50 else 200_000
 
     def _candidate_limit(self) -> int:
-        if self._N >= 100:
-            return 10
         if self._N >= 80:
-            return 12
+            return 10
         if self._N >= 50:
             return 16
         if self._N >= 30:
+<<<<<<< Updated upstream
             return 30
         if self._N >= 20:
             return 80
         return 100
+=======
+            return 28
+        return 80
+>>>>>>> Stashed changes
 
     def _enable_extra_pickup(self) -> bool:
         return 12 <= self._N <= 18
@@ -167,6 +170,7 @@ class ACOSolver(Solver):
 
         for h_pos, weight in self._dynamic_hotspots.items():
             dist = self._manhattan(pos, h_pos)
+
             if dist <= 3:
                 bonus += weight / (1.0 + dist)
 
@@ -214,29 +218,13 @@ class ACOSolver(Solver):
         ]
 
         if self._N >= 50:
-            max_pickup_dist = max(18, self._N // 2)
-            filtered: List[Order] = []
+            max_pickup_dist = max(12, self._N // 2)
+            candidates = [
+                o for o in candidates
+                if self._manhattan(shipper.position, (o.sx, o.sy)) <= max_pickup_dist
+            ]
 
-            for o in candidates:
-                pickup_pos = (o.sx, o.sy)
-                delivery_pos = (o.ex, o.ey)
-
-                d_pick = self._manhattan(shipper.position, pickup_pos)
-                d_del = self._manhattan(pickup_pos, delivery_pos)
-
-                if d_pick > max_pickup_dist:
-                    continue
-
-                est_finish = d_pick + d_del
-                slack = o.et - est_finish
-
-                if self._N >= 80 and slack < -120 and o.p <= 2:
-                    continue
-
-                filtered.append(o)
-
-            candidates = filtered
-
+<<<<<<< Updated upstream
         if self._N <= 25:
             candidates.sort(
                 key=lambda o: (
@@ -256,6 +244,14 @@ class ACOSolver(Solver):
                     o.et,
                     o.id,
                 )
+=======
+        candidates.sort(
+            key=lambda o: (
+                self._manhattan(shipper.position, (o.sx, o.sy)),
+                -o.p,
+                o.et,
+                o.id,
+>>>>>>> Stashed changes
             )
 
         return candidates[:limit]
@@ -312,11 +308,6 @@ class ACOSolver(Solver):
         urgency_bonus = 1.0 / (1.0 + remaining) if remaining >= 0 else -0.5
 
         net_profit = est_reward - cost_d1 - cost_d2 + hotspot_bonus + urgency_bonus
-
-        if finish_t <= order.et:
-            net_profit *= 1.25
-        elif self._N >= 80 and order.p <= 2:
-            net_profit *= 0.75
 
         if self._N >= 50:
             return max(0.01, net_profit) / (1.0 + 1.5 * d1 + 0.4 * d2)
@@ -399,10 +390,10 @@ class ACOSolver(Solver):
 
                     if self._N >= 50:
                         rank = (
-                            -score,
                             manh,
                             -order.p,
                             order.et,
+                            order.id,
                         )
                     else:
                         rank = (
@@ -512,10 +503,6 @@ class ACOSolver(Solver):
         shippers: List[Shipper] = obs["shippers"]
         t = int(obs.get("t", 0))
         T_max = int(obs.get("T", 240))
-
-        self.grid = obs["grid"]
-        self._N = int(obs.get("N", len(self.grid)))
-        self._path_cache_limit = 50_000 if self._N >= 50 else 200_000
 
         self._update_hotspot_beliefs(orders)
 
