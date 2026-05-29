@@ -213,7 +213,12 @@ class ACOSolver(Solver):
         ]
 
         if self._N >= 50:
-            max_pickup_dist = max(18, self._N // 2)
+            if self._N >= 100:
+                max_pickup_dist = 25
+            elif self._N >= 80:
+                max_pickup_dist = 30
+            else:
+                max_pickup_dist = max(18, self._N // 2)
             filtered: List[Order] = []
 
             for o in candidates:
@@ -277,6 +282,14 @@ class ACOSolver(Solver):
     ) -> float:
         pickup_pos = (order.sx, order.sy)
         delivery_pos = (order.ex, order.ey)
+
+        # Fast pruning for large maps
+        if self._N >= 100:
+            m1 = self._manhattan(shipper.position, pickup_pos)
+            m2 = self._manhattan(pickup_pos, delivery_pos)
+
+            if m1 + m2 > 60:
+                return 0.0
 
         d1 = self._distance(shipper.position, pickup_pos)
         if d1 >= INF:
@@ -516,7 +529,12 @@ class ACOSolver(Solver):
 
         self.grid = obs["grid"]
         self._N = int(obs.get("N", len(self.grid)))
-        self._path_cache_limit = 50_000 if self._N >= 50 else 200_000
+        if self._N >= 100:
+            self._path_cache_limit = 300_000
+        elif self._N >= 50:
+            self._path_cache_limit = 100_000
+        else:
+            self._path_cache_limit = 200_000
 
         self._update_hotspot_beliefs(orders)
 
