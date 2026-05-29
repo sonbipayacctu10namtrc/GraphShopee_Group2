@@ -21,7 +21,6 @@ class ACOSolver(Solver):
 
     def __init__(self, env: DeliveryEnv):
         super().__init__(env)
-        self.cfg = {"N": env.N, "C": env.C, "G": env.G, "T": env.T, "name": env.config_name}
 
         self._path_cache: Dict[Tuple[Position, Position], Tuple[int, Move]] = {}
         self._pheromone: Dict[Tuple[str, int], float] = {}
@@ -33,8 +32,9 @@ class ACOSolver(Solver):
         self._min_pheromone = 0.2
         self._max_pheromone = 15.0
 
-        self._N = len(self.grid)
-        self._path_cache_limit = 50_000 if self._N >= 50 else 200_000
+        # V6: không lấy N/grid từ env ở __init__
+        self._N = 0
+        self._path_cache_limit = 200_000
 
     def _candidate_limit(self) -> int:
         if self._N >= 100:
@@ -42,13 +42,15 @@ class ACOSolver(Solver):
         if self._N >= 80:
             return 12
         if self._N >= 50:
-            return 18
+            return 16
         if self._N >= 30:
-            return 32
-        return 80
+            return 30
+        if self._N >= 20:
+            return 80
+        return 100
 
     def _enable_extra_pickup(self) -> bool:
-        return 12 <= self._N <= 30
+        return 12 <= self._N <= 18
 
     def _manhattan(self, a: Position, b: Position) -> int:
         return abs(a[0] - b[0]) + abs(a[1] - b[1])
@@ -236,15 +238,26 @@ class ACOSolver(Solver):
 
             candidates = filtered
 
-        candidates.sort(
-            key=lambda o: (
-                -o.p,
-                self._manhattan(shipper.position, (o.sx, o.sy))
-                + 0.35 * self._manhattan((o.sx, o.sy), (o.ex, o.ey)),
-                o.et,
-                o.id,
+        if self._N <= 25:
+            candidates.sort(
+                key=lambda o: (
+                    self._manhattan(shipper.position, (o.sx, o.sy))
+                    + 0.6 * self._manhattan((o.sx, o.sy), (o.ex, o.ey)),
+                    -o.p,
+                    o.et,
+                    o.id,
+                )
             )
-        )
+        else:
+            candidates.sort(
+                key=lambda o: (
+                    -o.p,
+                    self._manhattan(shipper.position, (o.sx, o.sy))
+                    + 0.35 * self._manhattan((o.sx, o.sy), (o.ex, o.ey)),
+                    o.et,
+                    o.id,
+                )
+            )
 
         return candidates[:limit]
 
@@ -453,6 +466,9 @@ class ACOSolver(Solver):
         delivery_order: Optional[Order],
         orders: Dict[int, Order],
     ) -> Optional[Order]:
+        if self._N >= 50:
+            return None
+
         if delivery_order is None:
             return None
 
